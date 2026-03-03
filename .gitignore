@@ -19,6 +19,7 @@ Thumbs.db
 # IDE / Editor local config
 .cursor/
 .claude/
+.vscode/
 *.iml
 
 # Claude Code Router (personal LLM tooling, not part of the project)
