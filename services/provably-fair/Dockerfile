@@ -1,0 +1,19 @@
+FROM node:20-alpine
+RUN corepack enable && corepack prepare pnpm@10.25.0 --activate
+WORKDIR /app
+
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json tsconfig.base.json .npmrc ./
+COPY packages/shared-types/package.json packages/shared-types/
+COPY services/provably-fair/package.json services/provably-fair/
+COPY services/api-gateway/package.json services/api-gateway/
+RUN pnpm install
+
+COPY packages/shared-types/ packages/shared-types/
+COPY services/provably-fair/ services/provably-fair/
+
+RUN npx tsc -p packages/shared-types/tsconfig.json && \
+    npx tsc -p services/provably-fair/tsconfig.json
+
+WORKDIR /app/services/provably-fair
+EXPOSE 3001
+CMD ["node", "dist/index.js"]

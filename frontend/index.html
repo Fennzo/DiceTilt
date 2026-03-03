@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DiceTilt — Provably Fair Dice</title>
+  <script src="https://cdn.jsdelivr.net/npm/ethers@6.11.0/dist/ethers.umd.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background: #0f0f1a; color: #e0e0e0; min-height: 100vh; }
+    .header { display: flex; justify-content: space-between; align-items: center; padding: 16px 24px; background: #1a1a2e; border-bottom: 1px solid #2a2a4a; }
+    .header h1 { font-size: 1.4rem; color: #00d4ff; font-weight: 700; }
+    .header nav { display: flex; gap: 12px; }
+    .header nav a { color: #a0a0c0; text-decoration: none; padding: 8px 16px; border-radius: 6px; font-size: 0.9rem; transition: all 0.2s; }
+    .header nav a:hover { background: #2a2a4a; color: #fff; }
+    #loading { display: flex; justify-content: center; align-items: center; height: 80vh; flex-direction: column; gap: 16px; }
+    #loading .spinner { width: 40px; height: 40px; border: 3px solid #2a2a4a; border-top: 3px solid #00d4ff; border-radius: 50%; animation: spin 0.8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #game-floor { display: none; padding: 24px; max-width: 1200px; margin: 0 auto; }
+    .wallets { display: flex; gap: 12px; margin-bottom: 24px; }
+    .wallet-card { flex: 1; background: #1a1a2e; border: 1px solid #2a2a4a; border-radius: 10px; padding: 16px; cursor: pointer; transition: all 0.2s; }
+    .wallet-card.active { border-color: #00d4ff; box-shadow: 0 0 12px rgba(0, 212, 255, 0.15); }
+    .wallet-card .chain { font-size: 0.75rem; color: #888; text-transform: uppercase; letter-spacing: 1px; }
+    .wallet-card .balance { font-size: 1.8rem; font-weight: 700; color: #fff; margin: 4px 0; }
+    .wallet-card .currency { color: #00d4ff; font-weight: 600; }
+    .wallet-card .select-hint { font-size: 0.65rem; color: #555; margin-top: 4px; }
+    .wallet-card.active .select-hint { color: #00d4ff88; }
+
+    /* Main game area: game panel + deposit/withdraw panel side by side */
+    .game-area { display: flex; gap: 16px; margin-bottom: 24px; align-items: flex-start; }
+    .game-panel { flex: 1 1 0; min-width: 0; background: #1a1a2e; border: 1px solid #2a2a4a; border-radius: 12px; padding: 24px; }
+
+    /* Deposit/Withdraw panel */
+    .dw-panel { width: 280px; flex-shrink: 0; background: #1a1a2e; border: 1px solid #2a2a4a; border-radius: 12px; padding: 20px; }
+    .dw-panel h3 { font-size: 0.85rem; color: #888; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 16px; }
+    .dw-currency-badge { display: inline-flex; align-items: center; gap: 6px; background: #0f0f1a; border: 1px solid #2a2a4a; border-radius: 6px; padding: 6px 12px; margin-bottom: 16px; font-size: 0.85rem; }
+    .dw-currency-badge .dot { width: 8px; height: 8px; border-radius: 50%; background: #00d4ff; }
+    .dw-currency-badge span { color: #00d4ff; font-weight: 600; }
+    .dw-currency-badge .chain-label { color: #666; font-size: 0.75rem; }
+    .dw-hint { font-size: 0.7rem; color: #555; margin-bottom: 12px; }
+    .dw-amount-row { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+    .dw-amount-row label { font-size: 0.75rem; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
+    .dw-amount-input { background: #0f0f1a; border: 1px solid #2a2a4a; color: #fff; padding: 10px 14px; border-radius: 8px; font-size: 1.1rem; width: 100%; }
+    .dw-amount-input:focus { outline: none; border-color: #00d4ff; }
+    .dw-quick-amounts { display: flex; gap: 6px; margin-bottom: 16px; }
+    .dw-quick-amounts button { flex: 1; padding: 6px 4px; background: #0f0f1a; border: 1px solid #2a2a4a; color: #a0a0c0; border-radius: 6px; cursor: pointer; font-size: 0.75rem; transition: all 0.15s; }
+    .dw-quick-amounts button:hover { border-color: #00d4ff88; color: #00d4ff; }
+    .dw-buttons { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+    .btn-deposit { padding: 11px; background: #0d2e0d; border: 1px solid #2a6a2a; color: #80ee80; border-radius: 8px; cursor: pointer; font-weight: 700; font-size: 0.95rem; transition: all 0.2s; }
+    .btn-deposit:hover { background: #1a4d1a; border-color: #4aaa4a; }
+    .btn-deposit:disabled { opacity: 0.45; cursor: not-allowed; }
+    .btn-withdraw { padding: 11px; background: #2e0d0d; border: 1px solid #6a2a2a; color: #ee8080; border-radius: 8px; cursor: pointer; font-weight: 700; font-size: 0.95rem; transition: all 0.2s; }
+    .btn-withdraw:hover { background: #4d1a1a; border-color: #aa4a4a; }
+    .btn-withdraw:disabled { opacity: 0.45; cursor: not-allowed; }
+    .dw-status { min-height: 36px; font-size: 0.78rem; padding: 8px 10px; border-radius: 6px; background: #0f0f1a; border: 1px solid #1a1a2e; color: #888; word-break: break-all; }
+    .dw-status.ok { color: #00ff88; border-color: #1a3a2a; }
+    .dw-status.err { color: #ff4466; border-color: #3a1a2a; }
+
+    .bet-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+    .control-group { display: flex; flex-direction: column; gap: 6px; }
+    .control-group label { font-size: 0.8rem; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
+    .control-group input[type="number"] { background: #0f0f1a; border: 1px solid #2a2a4a; color: #fff; padding: 10px 14px; border-radius: 8px; font-size: 1rem; width: 100%; }
+    .control-group input:focus { outline: none; border-color: #00d4ff; }
+    .target-slider { width: 100%; margin: 8px 0; accent-color: #00d4ff; }
+    .direction-toggle { display: flex; gap: 0; }
+    .direction-toggle button { flex: 1; padding: 10px; border: 1px solid #2a2a4a; background: #0f0f1a; color: #888; cursor: pointer; font-size: 0.9rem; font-weight: 600; transition: all 0.2s; }
+    .direction-toggle button:first-child { border-radius: 8px 0 0 8px; }
+    .direction-toggle button:last-child { border-radius: 0 8px 8px 0; }
+    .direction-toggle button.active { background: #00d4ff; color: #0f0f1a; border-color: #00d4ff; }
+    .odds-display { display: flex; justify-content: space-between; padding: 12px 0; border-top: 1px solid #2a2a4a; margin-bottom: 16px; }
+    .odds-display .stat { text-align: center; }
+    .odds-display .stat .value { font-size: 1.3rem; font-weight: 700; color: #00d4ff; }
+    .odds-display .stat .label { font-size: 0.7rem; color: #888; text-transform: uppercase; }
+    #roll-btn { width: 100%; padding: 16px; background: linear-gradient(135deg, #00d4ff, #0088cc); border: none; border-radius: 10px; color: #fff; font-size: 1.2rem; font-weight: 700; cursor: pointer; transition: all 0.2s; letter-spacing: 1px; }
+    #roll-btn:hover { transform: translateY(-1px); box-shadow: 0 4px 20px rgba(0, 212, 255, 0.3); }
+    #roll-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
+    .result-display { text-align: center; padding: 20px; margin-bottom: 20px; min-height: 80px; display: flex; align-items: center; justify-content: center; flex-direction: column; }
+    .result-display .roll-number { font-size: 3rem; font-weight: 800; }
+    .result-display .roll-number.win { color: #00ff88; }
+    .result-display .roll-number.loss { color: #ff4466; }
+    .result-display .roll-label { font-size: 0.9rem; margin-top: 4px; }
+    .pf-panel { background: #1a1a2e; border: 1px solid #2a2a4a; border-radius: 12px; overflow: hidden; }
+    .pf-header { display: flex; justify-content: space-between; align-items: center; padding: 16px; cursor: pointer; }
+    .pf-header h3 { font-size: 0.9rem; color: #888; }
+    .pf-body { padding: 0 16px 16px; }
+    .pf-body.collapsed { display: none; }
+    .pf-field { margin-bottom: 12px; }
+    .pf-field label { font-size: 0.7rem; color: #666; text-transform: uppercase; display: block; margin-bottom: 4px; }
+    .pf-field .value { font-family: 'Courier New', monospace; font-size: 0.8rem; color: #a0a0c0; background: #0f0f1a; padding: 8px; border-radius: 6px; word-break: break-all; }
+    .pf-field input { background: #0f0f1a; border: 1px solid #2a2a4a; color: #fff; padding: 8px; border-radius: 6px; font-family: 'Courier New', monospace; font-size: 0.8rem; width: 100%; }
+    #pf-verify-btn, #pf-rotate-btn { padding: 8px 16px; border: 1px solid #2a2a4a; background: #0f0f1a; color: #a0a0c0; border-radius: 6px; cursor: pointer; font-size: 0.8rem; margin-right: 8px; }
+    #pf-rotate-btn { border-color: #00d4ff; color: #00d4ff; }
+    .history-table { width: 100%; border-collapse: collapse; font-size: 0.75rem; margin-top: 12px; }
+    .history-table th { text-align: left; padding: 6px 8px; color: #666; border-bottom: 1px solid #2a2a4a; font-weight: 600; text-transform: uppercase; }
+    .history-table td { padding: 6px 8px; border-bottom: 1px solid #1a1a2e; font-family: 'Courier New', monospace; }
+    .history-table .win { color: #00ff88; }
+    .history-table .loss { color: #ff4466; }
+    .verified { color: #00ff88; }
+    .hash-box { transition: opacity 0.3s, color 0.3s; }
+    .hash-box.stale { opacity: 0.3; color: #444 !important; }
+    .status-bar { position: fixed; bottom: 0; left: 0; right: 0; padding: 8px 24px; background: #1a1a2e; border-top: 1px solid #2a2a4a; display: flex; justify-content: space-between; font-size: 0.75rem; color: #666; }
+    .status-bar .connected { color: #00ff88; }
+    .status-bar .disconnected { color: #ff4466; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>DiceTilt</h1>
+    <div id="demo-banner" style="display:none; background:#1a2e0d; border:1px solid #2a6a2a; color:#80ee80; padding:4px 14px; border-radius:6px; font-size:0.78rem; font-family:'Courier New',monospace; letter-spacing:0.5px;">
+      DEMO — Hardhat #1 · <span id="demo-wallet-addr" style="color:#4aaa4a"></span>
+      &nbsp;·&nbsp;<a href="/" style="color:#80ee80; text-decoration:underline; cursor:pointer;">Exit Demo</a>
+    </div>
+    <nav>
+      <a href="?demo=1">Demo (pre-funded)</a>
+      <a href="dashboard.html">Dashboard</a>
+    </nav>
+  </div>
+
+  <div id="loading">
+    <div class="spinner"></div>
+    <div>Connecting...</div>
+  </div>
+
+  <div id="game-floor">
+    <!-- Wallet cards — click to select active currency for betting AND deposit/withdraw -->
+    <div class="wallets">
+      <div class="wallet-card active" data-chain="ethereum" data-currency="ETH">
+        <div class="chain">Ethereum</div>
+        <div class="balance" id="bal-ethereum-ETH">0.00</div>
+        <div class="currency">ETH</div>
+        <div class="select-hint">Click to select</div>
+      </div>
+      <div class="wallet-card" data-chain="solana" data-currency="SOL">
+        <div class="chain">Solana</div>
+        <div class="balance" id="bal-solana-SOL">0.00</div>
+        <div class="currency">SOL</div>
+        <div class="select-hint">Click to select</div>
+      </div>
+    </div>
+
+    <!-- Game panel + Deposit/Withdraw panel side by side -->
+    <div class="game-area">
+      <!-- Left: Betting -->
+      <div class="game-panel">
+        <div class="result-display" id="result-display">
+          <div style="color: #444; font-size: 1rem;">Place a bet to roll</div>
+        </div>
+
+        <div class="bet-controls">
+          <div class="control-group">
+            <label>Bet Amount</label>
+            <input type="number" id="wager-input" value="0.5" min="0.01" step="0.1">
+          </div>
+          <div class="control-group">
+            <label>Target (<span id="target-val">50</span>)</label>
+            <input type="range" id="target-slider" class="target-slider" min="2" max="98" value="50">
+          </div>
+        </div>
+
+        <div class="control-group" style="margin-bottom: 16px;">
+          <label>Direction</label>
+          <div class="direction-toggle">
+            <button class="active" data-dir="under" id="btn-under">Roll Under</button>
+            <button data-dir="over" id="btn-over">Roll Over</button>
+          </div>
+        </div>
+
+        <div class="odds-display">
+          <div class="stat"><div class="value" id="win-chance">49%</div><div class="label">Win Chance</div></div>
+          <div class="stat"><div class="value" id="multiplier">2.02x</div><div class="label">Multiplier</div></div>
+          <div class="stat"><div class="value" id="profit-on-win">0.51</div><div class="label">Profit on Win</div></div>
+        </div>
+
+        <button id="roll-btn">ROLL DICE</button>
+      </div>
+
+      <!-- Right: Deposit / Withdraw -->
+      <div class="dw-panel">
+        <h3>Deposit / Withdraw</h3>
+
+        <div class="dw-currency-badge">
+          <div class="dot"></div>
+          <span id="dw-currency-label">ETH</span>
+          <span class="chain-label" id="dw-chain-label">Ethereum</span>
+        </div>
+        <div class="dw-hint">Select a currency above, then enter an amount.</div>
+
+        <div class="dw-amount-row">
+          <label>Amount</label>
+          <input type="number" class="dw-amount-input" id="dw-amount" value="0.5" min="0.001" step="0.1" placeholder="0.00">
+        </div>
+
+        <div class="dw-quick-amounts">
+          <button data-amount="0.1">0.1</button>
+          <button data-amount="0.5">0.5</button>
+          <button data-amount="1.0">1.0</button>
+          <button data-amount="5.0">5.0</button>
+        </div>
+
+        <div class="dw-buttons">
+          <button class="btn-deposit" id="deposit-btn">Deposit</button>
+          <button class="btn-withdraw" id="withdraw-btn">Withdraw</button>
+        </div>
+
+        <div class="dw-status" id="dw-status">Ready</div>
+      </div>
+    </div>
+
+    <div class="pf-panel">
+      <div class="pf-header" id="pf-toggle">
+        <h3>Provably Fair</h3>
+        <span id="pf-arrow">▼</span>
+      </div>
+      <div class="pf-body" id="pf-body">
+        <div class="pf-field">
+          <label>Server Commitment (SHA-256)</label>
+          <div class="value" id="pf-commitment">—</div>
+        </div>
+        <div class="pf-field">
+          <label>Client Seed (editable)</label>
+          <input type="text" id="pf-client-seed" maxlength="64">
+        </div>
+        <div class="pf-field">
+          <label>Nonce</label>
+          <div class="value" id="pf-nonce">0</div>
+        </div>
+        <div style="margin: 12px 0;">
+          <button id="pf-rotate-btn">Rotate Seed & Verify</button>
+          <span id="pf-verify-status"></span>
+        </div>
+        <div class="pf-field">
+          <label>Server gameHash <span style="color:#444;font-size:0.65rem">(last verified bet)</span></label>
+          <div class="value hash-box" id="pf-server-gamehash">—</div>
+        </div>
+        <div class="pf-field">
+          <label>Recomputed Hash (Client) <span style="color:#444;font-size:0.65rem">(last verified bet)</span></label>
+          <div class="value hash-box" id="pf-client-gamehash">—</div>
+        </div>
+        <table class="history-table" id="history-table">
+          <thead><tr><th>#</th><th>Target</th><th>Dir</th><th>Result</th><th>Payout</th><th>Verified</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="status-bar">
+    <span id="ws-status" class="disconnected">● Disconnected</span>
+    <span id="latency-display">— ms</span>
+  </div>
+
+<script>
+(async function() {
+  const API = location.origin;
+  let ws, jwt, userId, wallet;
+  let selectedChain = 'ethereum', selectedCurrency = 'ETH';
+  let clientSeed = Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2,'0')).join('');
+  let betHistory = [];
+  let rolling = false;
+  let depositPending = false;
+  let depositChain = '';
+  let depositCurrency = '';
+  let withdrawPending = false;
+
+  document.getElementById('pf-client-seed').value = clientSeed;
+
+  // Auto-login — use Hardhat account #1 in demo mode (pre-funded on Anvil)
+  const isDemo = new URLSearchParams(location.search).get('demo') === '1';
+  try {
+    wallet = isDemo
+      // Correctly derive Hardhat account #1 using fromMnemonic (not fromPhrase+derivePath which gives wrong address in ethers v6)
+      ? ethers.HDNodeWallet.fromMnemonic(
+          ethers.Mnemonic.fromPhrase('test test test test test test test test test test test junk'),
+          "m/44'/60'/0'/0/1"
+        )
+      : ethers.Wallet.createRandom();
+    const addr = wallet.address;
+    const chRes = await fetch(`${API}/api/v1/auth/challenge`, { method: 'POST' });
+    const { nonce } = await chRes.json();
+    const signature = await wallet.signMessage(addr);
+    const vRes = await fetch(`${API}/api/v1/auth/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ walletAddress: addr, signature }),
+    });
+    const data = await vRes.json();
+    jwt = data.token;
+    userId = JSON.parse(atob(jwt.split('.')[1])).userId;
+    if (isDemo) {
+      document.getElementById('demo-banner').style.display = 'flex';
+      document.getElementById('demo-banner').style.alignItems = 'center';
+      document.getElementById('demo-wallet-addr').textContent =
+        wallet.address.slice(0, 6) + '…' + wallet.address.slice(-4);
+    }
+  } catch (e) {
+    document.getElementById('loading').innerHTML = '<div style="color:#ff4466">Auth failed: ' + e.message + '</div>';
+    return;
+  }
+
+  // Fetch initial PF status
+  async function fetchPfStatus() {
+    try {
+      const res = await fetch(`${API}/api/pf/status?chain=${selectedChain}&currency=${selectedCurrency}`, {
+        headers: { Authorization: `Bearer ${jwt}` },
+      });
+      const d = await res.json();
+      document.getElementById('pf-commitment').textContent = d.serverCommitment;
+      document.getElementById('pf-nonce').textContent = d.currentNonce;
+    } catch {}
+  }
+
+  // WebSocket
+  function connectWs() {
+    ws = new WebSocket(`ws://${location.host}/ws?token=${jwt}`);
+    ws.onopen = () => {
+      document.getElementById('ws-status').textContent = '● Connected';
+      document.getElementById('ws-status').className = 'connected';
+      document.getElementById('loading').style.display = 'none';
+      document.getElementById('game-floor').style.display = 'block';
+      fetchPfStatus();
+      fetchBalances();
+    };
+    ws.onclose = () => {
+      document.getElementById('ws-status').textContent = '● Disconnected';
+      document.getElementById('ws-status').className = 'disconnected';
+      setTimeout(connectWs, 2000);
+    };
+    ws.onmessage = (e) => {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'BET_RESULT') handleBetResult(msg);
+      else if (msg.type === 'BALANCE_UPDATE') {
+        updateBalance(msg.chain, msg.currency, msg.balance);
+        // If a deposit is in flight, this BALANCE_UPDATE IS the backend confirmation.
+        // Update status + re-enable button here, not in tx.wait().
+        if (depositPending && msg.chain === depositChain && msg.currency === depositCurrency) {
+          depositPending = false;
+          maybeClearBusy();
+          setDwStatus('Deposit confirmed — balance updated ✓', 'ok');
+        }
+      }
+      else if (msg.type === 'WITHDRAWAL_COMPLETED') handleWithdrawalCompleted(msg);
+      else if (msg.type === 'ERROR') handleError(msg);
+      else if (msg.type === 'PONG') { /* keepalive */ }
+    };
+  }
+  connectWs();
+
+  async function fetchBalances() {
+    try {
+      const r = await fetch(`${API}/api/v1/balance`, { headers: { Authorization: `Bearer ${jwt}` } });
+      if (r.ok) {
+        const d = await r.json();
+        updateBalance('ethereum', 'ETH', d.ethereum?.ETH ?? 10);
+        updateBalance('solana', 'SOL', d.solana?.SOL ?? 10);
+        return;
+      }
+    } catch {}
+    // Fallback to defaults if endpoint unreachable
+    updateBalance('ethereum', 'ETH', 10);
+    updateBalance('solana', 'SOL', 10);
+  }
+
+  function updateBalance(chain, currency, balance) {
+    const el = document.getElementById(`bal-${chain}-${currency}`);
+    if (el) el.textContent = parseFloat(balance).toFixed(4);
+  }
+
+  function handleBetResult(msg) {
+    rolling = false;
+    document.getElementById('roll-btn').disabled = false;
+
+    const display = document.getElementById('result-display');
+    const isWin = msg.payoutAmount > 0;
+    display.innerHTML = `
+      <div class="roll-number ${isWin ? 'win' : 'loss'}">${msg.gameResult}</div>
+      <div class="roll-label">${isWin ? `WIN +${msg.payoutAmount.toFixed(4)}` : 'LOSS'} · ${msg.direction} ${msg.target} · ${msg.multiplier}x</div>
+    `;
+
+    // msg.newBalance is post-deduct but pre-credit. Adding payoutAmount gives the
+    // true settled balance (payoutAmount is 0 on losses so this is always correct).
+    updateBalance(msg.chain, msg.currency, msg.newBalance + msg.payoutAmount);
+    document.getElementById('pf-nonce').textContent = msg.nonce;
+    document.getElementById('latency-display').textContent = `${(performance.now() - window._betSentAt).toFixed(1)} ms`;
+
+    betHistory.push({
+      nonce: msg.nonce, target: msg.target, direction: msg.direction,
+      result: msg.gameResult, payout: msg.payoutAmount, hash: msg.gameHash,
+      clientSeed: document.getElementById('pf-client-seed').value, verified: null,
+    });
+    renderHistory();
+  }
+
+  function handleWithdrawalCompleted(msg) {
+    withdrawPending = false;
+    maybeClearBusy();
+    setDwStatus(`Withdrawal complete — tx: ${(msg.txHash || '—').slice(0, 20)}…`, 'ok');
+    fetchBalances();
+  }
+
+  function handleError(msg) {
+    rolling = false;
+    document.getElementById('roll-btn').disabled = false;
+    const display = document.getElementById('result-display');
+    display.innerHTML = `<div style="color:#ff4466">${msg.code}: ${msg.message}</div>`;
+  }
+
+  // Roll button
+  document.getElementById('roll-btn').addEventListener('click', () => {
+    if (rolling || ws.readyState !== 1) return;
+    rolling = true;
+    document.getElementById('roll-btn').disabled = true;
+    document.getElementById('pf-server-gamehash').classList.add('stale');
+    document.getElementById('pf-client-gamehash').classList.add('stale');
+    clientSeed = document.getElementById('pf-client-seed').value;
+    window._betSentAt = performance.now();
+    ws.send(JSON.stringify({
+      type: 'BET_REQUEST',
+      wagerAmount: parseFloat(document.getElementById('wager-input').value),
+      clientSeed,
+      chain: selectedChain,
+      currency: selectedCurrency,
+      target: parseInt(document.getElementById('target-slider').value),
+      direction: document.querySelector('.direction-toggle button.active').dataset.dir,
+    }));
+  });
+
+  // Wallet selector — also updates deposit/withdraw currency label
+  document.querySelectorAll('.wallet-card').forEach(card => {
+    card.addEventListener('click', () => {
+      document.querySelectorAll('.wallet-card').forEach(c => c.classList.remove('active'));
+      card.classList.add('active');
+      selectedChain = card.dataset.chain;
+      selectedCurrency = card.dataset.currency;
+      document.getElementById('dw-currency-label').textContent = selectedCurrency;
+      document.getElementById('dw-chain-label').textContent = card.querySelector('.chain').textContent;
+      setDwStatus('Ready');
+      fetchPfStatus();
+    });
+  });
+
+  // Direction toggle
+  document.querySelectorAll('.direction-toggle button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.direction-toggle button').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      updateOdds();
+    });
+  });
+
+  // Target slider
+  document.getElementById('target-slider').addEventListener('input', (e) => {
+    document.getElementById('target-val').textContent = e.target.value;
+    updateOdds();
+  });
+  document.getElementById('wager-input').addEventListener('input', updateOdds);
+
+  function updateOdds() {
+    const target = parseInt(document.getElementById('target-slider').value);
+    const dir = document.querySelector('.direction-toggle button.active').dataset.dir;
+    const wager = parseFloat(document.getElementById('wager-input').value) || 0;
+    const winChance = dir === 'under' ? target - 1 : 100 - target;
+    const multiplier = winChance > 0 ? 99 / winChance : 0;
+    const profit = wager * multiplier - wager;
+    document.getElementById('win-chance').textContent = winChance + '%';
+    document.getElementById('multiplier').textContent = multiplier.toFixed(2) + 'x';
+    document.getElementById('profit-on-win').textContent = profit.toFixed(4);
+  }
+
+  // PF panel toggle
+  document.getElementById('pf-toggle').addEventListener('click', () => {
+    const body = document.getElementById('pf-body');
+    body.classList.toggle('collapsed');
+    document.getElementById('pf-arrow').textContent = body.classList.contains('collapsed') ? '▶' : '▼';
+  });
+
+  // Seed rotation + verification
+  document.getElementById('pf-rotate-btn').addEventListener('click', async () => {
+    try {
+      const res = await fetch(`${API}/api/pf/rotate-seed`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${jwt}`, 'Content-Type': 'application/json' },
+      });
+      const d = await res.json();
+      const revealedSeed = d.revealedServerSeed;
+      document.getElementById('pf-commitment').textContent = d.newCommitment;
+      document.getElementById('pf-nonce').textContent = '0';
+      document.getElementById('pf-verify-status').textContent = 'Verifying...';
+
+      let allPass = true;
+      let lastRecomputedHash = '';
+      const encoder = new TextEncoder();
+      for (const bet of betHistory) {
+        const key = await crypto.subtle.importKey('raw', encoder.encode(revealedSeed), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+        const data = encoder.encode(`${bet.clientSeed}:${bet.nonce}`);
+        const sig = await crypto.subtle.sign('HMAC', key, data);
+        const recomputedHash = Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, '0')).join('');
+        lastRecomputedHash = recomputedHash;
+        const expectedResult = (parseInt(recomputedHash.slice(0, 5), 16) % 100) + 1;
+        bet.verified = expectedResult === bet.result;
+        if (!bet.verified) allPass = false;
+      }
+
+      // Populate hash display boxes with the last verified bet
+      if (betHistory.length > 0) {
+        const lastBet = betHistory[betHistory.length - 1];
+        const serverHashEl = document.getElementById('pf-server-gamehash');
+        const clientHashEl = document.getElementById('pf-client-gamehash');
+        serverHashEl.textContent = lastBet.hash;
+        clientHashEl.textContent = lastRecomputedHash;
+        serverHashEl.classList.remove('stale');
+        clientHashEl.classList.remove('stale');
+      }
+
+      document.getElementById('pf-verify-status').innerHTML = allPass
+        ? `<span class="verified">All ${betHistory.length} outcomes verified ✓</span>`
+        : '<span style="color:#ff4466">Verification FAILED</span>';
+      renderHistory();
+      betHistory = [];
+    } catch (e) {
+      document.getElementById('pf-verify-status').textContent = 'Error: ' + e.message;
+    }
+  });
+
+  function renderHistory() {
+    const tbody = document.querySelector('#history-table tbody');
+    tbody.innerHTML = '';
+    for (const b of [...betHistory].reverse()) {
+      const tr = document.createElement('tr');
+      const isWin = b.payout > 0;
+      tr.innerHTML = `
+        <td>${b.nonce}</td>
+        <td>${b.target}</td>
+        <td>${b.direction}</td>
+        <td class="${isWin ? 'win' : 'loss'}">${b.result}</td>
+        <td class="${isWin ? 'win' : 'loss'}">${isWin ? '+' + b.payout.toFixed(4) : '0'}</td>
+        <td>${b.verified === null ? '—' : b.verified ? '<span class="verified">✓</span>' : '<span style="color:#ff4466">✗</span>'}</td>
+      `;
+      tbody.appendChild(tr);
+    }
+  }
+
+  // Deposit/Withdraw helpers
+  function setDwStatus(msg, type) {
+    const el = document.getElementById('dw-status');
+    el.textContent = msg;
+    el.className = 'dw-status' + (type ? ' ' + type : '');
+  }
+
+  function getDwAmount() {
+    return parseFloat(document.getElementById('dw-amount').value) || 0;
+  }
+
+  // Disable/enable both deposit and withdraw buttons together.
+  // Any in-flight transaction locks the entire panel so users can't
+  // initiate a second operation while one is already processing.
+  function setDwBusy(busy) {
+    document.getElementById('deposit-btn').disabled = busy;
+    document.getElementById('withdraw-btn').disabled = busy;
+  }
+
+  // Re-enable buttons only when neither deposit nor withdrawal is pending.
+  function maybeClearBusy() {
+    if (!depositPending && !withdrawPending) setDwBusy(false);
+  }
+
+  // Quick amount buttons
+  document.querySelectorAll('.dw-quick-amounts button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.getElementById('dw-amount').value = btn.dataset.amount;
+    });
+  });
+
+  // Deposit button — send ETH/SOL to Treasury contract on-chain.
+  // Balance is ONLY updated when BALANCE_UPDATE arrives via WebSocket (backend confirmed).
+  // The deposit button stays disabled until that confirmation arrives.
+  document.getElementById('deposit-btn').addEventListener('click', async () => {
+    const amount = getDwAmount();
+    if (!amount || amount <= 0) {
+      setDwStatus('Enter a valid amount.', 'err');
+      return;
+    }
+    if (selectedCurrency !== 'ETH') {
+      setDwStatus('On-chain deposit only supported for ETH in this demo.', 'err');
+      return;
+    }
+    try {
+      setDwBusy(true);
+      setDwStatus('Fetching EVM config...');
+      const cfgRes = await fetch(`${API}/api/v1/config`);
+      if (!cfgRes.ok) throw new Error('Config endpoint returned ' + cfgRes.status);
+      const cfg = await cfgRes.json();
+      if (!cfg.treasuryContractAddress || !cfg.evmRpcUrl) {
+        setDwStatus('EVM not ready. Start the evm-node container.', 'err');
+        maybeClearBusy();
+        return;
+      }
+      setDwStatus('Sending ' + amount + ' ' + selectedCurrency + '...');
+      const provider = new ethers.JsonRpcProvider(cfg.evmRpcUrl);
+      // Fast polling so tx.wait() resolves in ~250ms instead of the 4s default.
+      // The backend pipeline (evm-listener→Kafka→ledger-consumer→Redis pub/sub→WS)
+      // completes in ~200-400ms, so BALANCE_UPDATE arrives around the same time as
+      // tx.wait(). The BALANCE_UPDATE handler is the authoritative signal — it updates
+      // the balance AND the status and re-enables the button.
+      provider.pollingInterval = 250;
+      const signer = new ethers.Wallet(wallet.privateKey, provider);
+      const tx = await signer.sendTransaction({
+        to: cfg.treasuryContractAddress,
+        value: ethers.parseEther(amount.toString()),
+        data: '0x',
+      });
+      // Mark pending BEFORE awaiting tx.wait() so the WS BALANCE_UPDATE handler
+      // knows a deposit is in flight if it arrives while we're still polling.
+      depositPending = true;
+      depositChain = selectedChain;
+      depositCurrency = selectedCurrency;
+      setDwStatus('Sent! Waiting for confirmation...');
+      await tx.wait();
+      // tx.wait() resolved (block mined). If BALANCE_UPDATE already arrived via WS,
+      // depositPending was cleared and the status/button were already updated there.
+      // If not yet (edge case), show a transitional message; BALANCE_UPDATE will finalize it.
+      if (depositPending) {
+        setDwStatus('Transaction mined — awaiting ledger update…', 'ok');
+        // Safety net: if BALANCE_UPDATE never arrives (e.g. service down), re-enable
+        // the button after 10s so the user isn't locked out.
+        setTimeout(() => {
+          if (depositPending) {
+            depositPending = false;
+            maybeClearBusy();
+            fetchBalances();
+          }
+        }, 10000);
+      }
+    } catch (e) {
+      depositPending = false;
+      maybeClearBusy();
+      setDwStatus('Deposit failed: ' + e.message, 'err');
+    }
+    // NOTE: buttons are intentionally re-enabled in BALANCE_UPDATE handler (success path)
+    // or in the catch block (error path). Not in finally, because we want both buttons
+    // disabled until the backend confirms the balance change.
+  });
+
+  // Withdraw button — calls API which atomically deducts balance in Redis and queues on-chain payout.
+  // Both buttons are disabled for the full duration: from clicking Withdraw until WITHDRAWAL_COMPLETED
+  // arrives via WebSocket. A 60s safety-net re-enables them if the WS signal never arrives
+  // (e.g. payout-worker error, Treasury dry).
+  document.getElementById('withdraw-btn').addEventListener('click', async () => {
+    const amount = getDwAmount();
+    if (!amount || amount <= 0) {
+      setDwStatus('Enter a valid amount.', 'err');
+      return;
+    }
+    setDwBusy(true);
+    setDwStatus('Requesting withdrawal of ' + amount + ' ' + selectedCurrency + '...');
+    try {
+      const res = await fetch(`${API}/api/v1/withdraw`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${jwt}` },
+        body: JSON.stringify({ amount, chain: selectedChain, currency: selectedCurrency }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        withdrawPending = true;
+        // Redis balance was atomically deducted at request time — fetch immediately.
+        await fetchBalances();
+        setDwStatus('Withdrawal initiated — balance deducted. Awaiting on-chain payout…', 'ok');
+        // Safety net: re-enable after 60s if WITHDRAWAL_COMPLETED never arrives.
+        setTimeout(() => {
+          if (withdrawPending) {
+            withdrawPending = false;
+            maybeClearBusy();
+            fetchBalances();
+            setDwStatus('Withdrawal timed out — on-chain payout may have failed. Check your balance.', 'err');
+          }
+        }, 60000);
+      } else {
+        maybeClearBusy();
+        setDwStatus((data.message || data.error || 'Withdraw failed'), 'err');
+      }
+    } catch (e) {
+      maybeClearBusy();
+      setDwStatus('Withdraw failed: ' + e.message, 'err');
+    }
+    // NOTE: buttons are intentionally kept disabled after a successful 202 until
+    // WITHDRAWAL_COMPLETED arrives via WebSocket (handleWithdrawalCompleted re-enables them).
+  });
+
+  // Keepalive
+  setInterval(() => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'PING' })); }, 30000);
+})();
+</script>
+</body>
+</html>

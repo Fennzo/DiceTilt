@@ -1,0 +1,215 @@
+{
+  "uid": "dicetilt",
+  "title": "DiceTilt",
+  "timezone": "browser",
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "panels": [
+    {
+      "title": "Active Players",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 4, "x": 0, "y": 0 },
+      "targets": [{ "expr": "dicetilt_active_websocket_connections", "legendFormat": "players" }],
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{"color":"green","value":null}] } } }
+    },
+    {
+      "title": "Bets / sec",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 4, "x": 4, "y": 0 },
+      "targets": [{ "expr": "rate(dicetilt_bets_total[1m])", "legendFormat": "bets/s" }],
+      "fieldConfig": { "defaults": { "unit": "ops", "color": { "mode": "thresholds" }, "thresholds": { "steps": [{"color":"blue","value":null}] } } }
+    },
+    {
+      "title": "Win Rate %",
+      "type": "gauge",
+      "gridPos": { "h": 6, "w": 4, "x": 8, "y": 0 },
+      "targets": [{ "expr": "rate(dicetilt_bets_total{outcome=\"win\"}[5m]) / rate(dicetilt_bets_total[5m]) * 100", "legendFormat": "win %" }],
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "thresholds": { "steps": [{"color":"red","value":null},{"color":"yellow","value":30},{"color":"green","value":45}] } } }
+    },
+    {
+      "title": "Total Volume by Chain",
+      "type": "bargauge",
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 0 },
+      "targets": [{ "expr": "dicetilt_wager_volume_total", "legendFormat": "{{chain}}:{{currency}}" }],
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "thresholds": { "steps": [{"color":"green","value":null}] } } }
+    },
+    {
+      "title": "🎯 Row: Game Floor",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false
+    },
+    {
+      "title": "Bet Processing Latency (P50 / P95 / P99)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 7 },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, rate(dicetilt_bet_processing_duration_ms_bucket[1m]))", "legendFormat": "P50" },
+        { "expr": "histogram_quantile(0.95, rate(dicetilt_bet_processing_duration_ms_bucket[1m]))", "legendFormat": "P95" },
+        { "expr": "histogram_quantile(0.99, rate(dicetilt_bet_processing_duration_ms_bucket[1m]))", "legendFormat": "P99" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ms", "custom": { "drawStyle": "line", "fillOpacity": 10 }, "thresholds": { "steps": [{"color":"green","value":null},{"color":"yellow","value":15},{"color":"red","value":20}] } } }
+    },
+    {
+      "title": "PF Hash Latency",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 7 },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, rate(dicetilt_provably_fair_hash_duration_ms_bucket[1m]))", "legendFormat": "P95" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ms", "custom": { "drawStyle": "line", "fillOpacity": 10 } } }
+    },
+    {
+      "title": "Redis Lua Latency",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 7 },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, rate(dicetilt_redis_lua_execution_duration_ms_bucket[1m]))", "legendFormat": "P95" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ms", "custom": { "drawStyle": "line", "fillOpacity": 10 } } }
+    },
+    {
+      "title": "⚡ Row: Performance Proof",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 6 },
+      "collapsed": false
+    },
+    {
+      "title": "Double-Spend Rejections",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 16 },
+      "targets": [{ "expr": "dicetilt_double_spend_rejections_total", "legendFormat": "rejections" }],
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{"color":"green","value":null},{"color":"orange","value":1}] } } }
+    },
+    {
+      "title": "Auth Failures",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 16 },
+      "targets": [{ "expr": "dicetilt_auth_failures_total", "legendFormat": "failures" }],
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{"color":"green","value":null},{"color":"red","value":1}] } } }
+    },
+    {
+      "title": "Withdrawal Requests",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 16 },
+      "targets": [{ "expr": "dicetilt_withdrawal_requests_total", "legendFormat": "{{chain}}" }],
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{"color":"blue","value":null}] } } }
+    },
+    {
+      "title": "Wager Volume",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 16 },
+      "targets": [{ "expr": "rate(dicetilt_wager_volume_total[1m])", "legendFormat": "{{chain}}:{{currency}}" }],
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "bars", "fillOpacity": 80 } } }
+    },
+    {
+      "title": "🔒 Row: Security & Integrity",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 15 },
+      "collapsed": false
+    },
+    {
+      "title": "🚀 Row: Phase 6 SLO",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 },
+      "collapsed": false
+    },
+    {
+      "title": "P95 Bet Latency — SLO <20ms",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 24 },
+      "targets": [{
+        "expr": "histogram_quantile(0.95, rate(dicetilt_bet_processing_duration_ms_bucket[5m]))",
+        "legendFormat": "P95 ms"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 15 },
+              { "color": "red", "value": 20 }
+            ]
+          },
+          "mappings": [],
+          "custom": {}
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background"
+      }
+    },
+    {
+      "title": "Double-Spend Rejections / sec",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 24 },
+      "targets": [{
+        "expr": "rate(dicetilt_double_spend_rejections_total[1m])",
+        "legendFormat": "rejections/s"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "color": { "fixedColor": "orange", "mode": "fixed" },
+          "custom": { "drawStyle": "line", "fillOpacity": 20, "lineWidth": 2 },
+          "thresholds": {
+            "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 0.01 }]
+          }
+        }
+      }
+    },
+    {
+      "title": "DLQ Messages Total — SLO: 0",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 24 },
+      "targets": [{
+        "expr": "sum(dicetilt_kafka_dlq_messages_total)",
+        "legendFormat": "DLQ total"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          },
+          "custom": {}
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background"
+      }
+    },
+    {
+      "title": "Kafka Consumer Lag",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 24 },
+      "targets": [{
+        "expr": "sum by (topic) (dicetilt_kafka_consumer_lag)",
+        "legendFormat": "{{topic}}"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 10 },
+          "thresholds": {
+            "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 100 }]
+          }
+        }
+      }
+    }
+  ],
+  "schemaVersion": 39,
+  "version": 2
+}

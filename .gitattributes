@@ -1,0 +1,15 @@
+# Normalize all text files to LF in the repository and on checkout.
+# This ensures shell scripts and Docker entrypoints are always LF,
+# which is required for Linux containers regardless of the developer's OS.
+* text=auto eol=lf
+
+# Windows-only scripts can stay CRLF on Windows checkout
+*.ps1 text eol=crlf
+
+# Binary files — never touch line endings
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.woff binary
+*.woff2 binary
