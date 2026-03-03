@@ -1,0 +1,28 @@
+{
+  "name": "@dicetilt/evm-listener",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "@dicetilt/shared-types": "workspace:*",
+    "ethers": "^6.11.0",
+    "kafkajs": "^2.2.4",
+    "pg": "^8.11.0",
+    "prom-client": "^15.1.0",
+    "uuid": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/pg": "^8.11.0",
+    "@types/uuid": "^9.0.0",
+    "typescript": "^5.4.0",
+    "tsx": "^4.7.0",
+    "rimraf": "^5.0.0"
+  }
+}

@@ -1,0 +1,29 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: 'api-gateway'
+    static_configs:
+      - targets: ['api-gateway:3000']
+    metrics_path: /metrics
+
+  - job_name: 'pf-worker'
+    static_configs:
+      - targets: ['pf-worker:3001']
+    metrics_path: /metrics
+
+  - job_name: 'evm-listener'
+    static_configs:
+      - targets: ['evm-listener:3010']
+    metrics_path: /metrics
+
+  - job_name: 'evm-payout-worker'
+    static_configs:
+      - targets: ['evm-payout-worker:3020']
+    metrics_path: /metrics
+
+  - job_name: 'ledger-consumer'
+    static_configs:
+      - targets: ['ledger-consumer:3030']
+    metrics_path: /metrics

@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DiceTilt — System Dashboard</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0f0f1a; color: #e0e0e0; height: 100vh; display: flex; flex-direction: column; }
+    .header { display: flex; justify-content: space-between; align-items: center; padding: 16px 24px; background: #1a1a2e; border-bottom: 1px solid #2a2a4a; flex-shrink: 0; }
+    .header h1 { font-size: 1.4rem; color: #00d4ff; font-weight: 700; }
+    .header nav a { color: #a0a0c0; text-decoration: none; padding: 8px 16px; border-radius: 6px; font-size: 0.9rem; transition: all 0.2s; }
+    .header nav a:hover { background: #2a2a4a; color: #fff; }
+    iframe { flex: 1; border: none; width: 100%; }
+    .fallback { flex: 1; display: flex; justify-content: center; align-items: center; flex-direction: column; gap: 16px; color: #666; }
+    .fallback a { color: #00d4ff; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>DiceTilt — System Dashboard</h1>
+    <nav><a href="index.html">Back to Game</a></nav>
+  </div>
+  <iframe id="grafana-frame" src="http://localhost:3001/d/dicetilt/dicetilt?orgId=1&kiosk&refresh=5s"></iframe>
+  <div class="fallback" id="fallback" style="display:none;">
+    <p>Grafana dashboard is loading...</p>
+    <p>If it doesn't appear, open <a href="http://localhost:3001" target="_blank">localhost:3001</a> directly.</p>
+  </div>
+  <script>
+    const iframe = document.getElementById('grafana-frame');
+    iframe.onerror = () => { iframe.style.display = 'none'; document.getElementById('fallback').style.display = 'flex'; };
+    setTimeout(() => {
+      try { if (!iframe.contentWindow.document.body.innerHTML) throw 0; } catch { iframe.style.display = 'none'; document.getElementById('fallback').style.display = 'flex'; }
+    }, 5000);
+  </script>
+</body>
+</html>
