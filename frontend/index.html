@@ -829,6 +829,7 @@
   let betHistory = [];
   let rolling = false;
   let depositPending = false;
+  let depositFallbackTimer = null;
   let depositChain = '';
   let depositCurrency = '';
   let withdrawPending = false;
@@ -957,8 +958,10 @@
       body: JSON.stringify({ walletAddress: addr, signature }),
     });
     const data = await vRes.json();
-    jwt    = data.token;
-    userId = JSON.parse(atob(jwt.split('.')[1])).userId;
+    jwt = data.token;
+    const parts = jwt.split('.');
+    if (parts.length !== 3) throw new Error('Invalid token format');
+    userId = JSON.parse(atob(parts[1])).userId;
     if (isDemo) {
       document.getElementById('demo-banner').style.display = 'flex';
       document.getElementById('demo-wallet-addr').textContent =
@@ -1005,6 +1008,7 @@
       else if (msg.type === 'BALANCE_UPDATE') {
         updateBalance(msg.chain, msg.currency, msg.balance);
         if (depositPending && msg.chain === depositChain && msg.currency === depositCurrency) {
+          if (depositFallbackTimer) { clearTimeout(depositFallbackTimer); depositFallbackTimer = null; }
           depositPending = false;
           maybeClearBusy();
           setDwStatus('Deposit confirmed — balance updated ✓', 'ok');
@@ -1273,8 +1277,13 @@
       await tx.wait();
       if (depositPending) {
         setDwStatus('Transaction mined — awaiting ledger update…', 'ok');
-        setTimeout(() => {
-          if (depositPending) { depositPending = false; maybeClearBusy(); fetchBalances(); }
+        depositFallbackTimer = setTimeout(() => {
+          if (depositPending) {
+            depositPending = false;
+            depositFallbackTimer = null;
+            maybeClearBusy();
+            fetchBalances();
+          }
         }, 10000);
       }
     } catch (e) {
