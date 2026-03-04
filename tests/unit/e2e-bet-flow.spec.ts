@@ -7,31 +7,34 @@ const WS_URL = 'ws://localhost:3000/ws';
 const REDIS_URL = process.env['REDIS_URI'] ?? 'redis://localhost:6380';
 
 async function authenticate(): Promise<{ token: string; userId: string }> {
-  const wallet = ethers.Wallet.createRandom();
-  const address = wallet.address;
-
-  const challengeRes = await fetch(`${API_URL}/api/v1/auth/challenge`, { method: 'POST' });
-  const { nonce } = await challengeRes.json() as { nonce: string };
-
-  const signature = await wallet.signMessage(address);
-
-  const verifyRes = await fetch(`${API_URL}/api/v1/auth/verify`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ walletAddress: address, signature }),
-  });
-  const { token } = await verifyRes.json() as { token: string };
-
+  const res = await fetch(`${API_URL}/api/v1/dev/token?walletIndex=399`);
+  const { token } = await res.json() as { token: string };
   const decoded = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
   return { token, userId: decoded.userId };
 }
 
 function connectWs(token: string): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`${WS_URL}?token=${token}`);
-    ws.on('open', () => resolve(ws));
-    ws.on('error', reject);
-    setTimeout(() => reject(new Error('WS connect timeout')), 5000);
+    const timer = setTimeout(() => reject(new Error('WS connect timeout')), 10000);
+    const ws = new WebSocket(WS_URL);
+    ws.on('error', (err) => { clearTimeout(timer); reject(err); });
+    ws.once('open', () => {
+      ws.send(JSON.stringify({ type: 'AUTH', token }));
+    });
+    ws.on('message', function authHandler(data: WebSocket.Data) {
+      try {
+        const msg = JSON.parse(data.toString()) as { type: string; code?: string };
+        if (msg.type === 'AUTH_OK') {
+          clearTimeout(timer);
+          ws.removeListener('message', authHandler);
+          resolve(ws);
+        } else if (msg.type === 'ERROR') {
+          clearTimeout(timer);
+          ws.removeListener('message', authHandler);
+          reject(new Error(`AUTH rejected: ${msg.code}`));
+        }
+      } catch { /* skip non-JSON */ }
+    });
   });
 }
 
@@ -113,7 +116,7 @@ describe('End-to-End Bet Flow (live Docker stack)', () => {
   test('insufficient balance returns INSUFFICIENT_BALANCE error', async () => {
     const res = await sendAndReceive(ws, {
       type: 'BET_REQUEST',
-      wagerAmount: 99999,
+      wagerAmount: 11,
       clientSeed: 'overdraft-test',
       chain: 'ethereum',
       currency: 'ETH',

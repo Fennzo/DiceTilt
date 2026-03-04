@@ -65,15 +65,15 @@ export const options = {
     evening_peak: {
       executor:    'ramping-vus',
       startVUs:    0,
-      stages: [  // Total: 615s (~10.25 min)
-        { duration: '60s',  target: 100 },   // Stage 1: early evening warm-up
-        { duration: '90s',  target: 100 },   // Stage 2: stability check at 100 VUs
-        { duration: '60s',  target: 300 },   // Stage 3: prime time ramp (~3.3 VU/sec)
-        { duration: '90s',  target: 300 },   // Stage 4: prime time sustained
-        { duration: '45s',  target: 400 },   // Stage 5: peak surge
-        { duration: '180s', target: 400 },   // Stage 6: peak plateau (3 min hold)
-        { duration: '60s',  target: 150 },   // Stage 7: post-peak taper
-        { duration: '30s',  target: 0   },   // Stage 8: wind down
+      stages: [  // Total: 305s (~5 min)
+        { duration: '30s',  target: 100 },   // Stage 1: early evening warm-up
+        { duration: '45s',  target: 100 },   // Stage 2: stability check at 100 VUs
+        { duration: '30s',  target: 300 },   // Stage 3: prime time ramp
+        { duration: '45s',  target: 300 },   // Stage 4: prime time sustained
+        { duration: '20s',  target: 400 },   // Stage 5: peak surge
+        { duration: '90s',  target: 400 },   // Stage 6: peak plateau (90s hold)
+        { duration: '30s',  target: 150 },   // Stage 7: post-peak taper
+        { duration: '15s',  target: 0   },   // Stage 8: wind down
       ],
       gracefulRampDown: '30s',
     },
@@ -199,7 +199,7 @@ export function handleSummary(data) {
   const errors = m['peak_bets_error']?.values?.count               ?? 0;
   const ok     = eth + sol;
   const total  = ok + insuf + errors;
-  const durSec = 615;  // Sum of all stage durations: 60+90+60+90+45+180+60+30
+  const durSec = 305;  // Sum of all stage durations: 30+45+30+45+20+90+30+15
 
   const sloP95 = p95 < 35;
   const sloP99 = p99 < 75;

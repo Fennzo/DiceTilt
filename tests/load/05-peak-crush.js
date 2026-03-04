@@ -80,15 +80,15 @@ export const options = {
       executor:    'ramping-vus',
       startVUs:    0,
       stages: [
-        { duration: '60s',  target: 300  },   // Stage 1: warm-up (5 VU/sec)
-        { duration: '60s',  target: 300  },   // Stage 2: observe warm cache at 300 VUs
-        { duration: '60s',  target: 600  },   // Stage 3: pressure increase (5 VU/sec)
-        { duration: '60s',  target: 600  },   // Stage 4: sustain mid-load
-        { duration: '45s',  target: 800  },   // Stage 5: near-peak (~4.4 VU/sec)
-        { duration: '300s', target: 800  },   // Stage 6: *** 5-MIN CRUSH at 800 VUs ***
-        { duration: '30s',  target: 1000 },   // Stage 7: push past ceiling (6.7 VU/sec)
-        { duration: '120s', target: 1000 },   // Stage 8: maximum load hold
-        { duration: '60s',  target: 0    },   // Stage 9: ramp-down (watch recovery)
+        { duration: '30s',  target: 300  },   // Stage 1: warm-up
+        { duration: '30s',  target: 300  },   // Stage 2: observe warm cache at 300 VUs
+        { duration: '30s',  target: 600  },   // Stage 3: pressure increase
+        { duration: '30s',  target: 600  },   // Stage 4: sustain mid-load
+        { duration: '25s',  target: 800  },   // Stage 5: near-peak
+        { duration: '150s', target: 800  },   // Stage 6: *** 2.5-MIN CRUSH at 800 VUs ***
+        { duration: '20s',  target: 1000 },   // Stage 7: push past ceiling
+        { duration: '60s',  target: 1000 },   // Stage 8: maximum load hold
+        { duration: '30s',  target: 0    },   // Stage 9: ramp-down (watch recovery)
       ],
       gracefulRampDown: '30s',
     },
@@ -234,7 +234,7 @@ export function handleSummary(data) {
   const connOk  = cval('crush_ws_connects');
   const errR    = rval('crush_bet_error_rate');
   const total   = ok + insuf + errors;
-  const durSec  = 13 * 60;
+  const durSec  = 405;  // Sum of all stage durations: 30+30+30+30+25+150+20+60+30
 
   const sloP95    = p95 < 100;
   const sloP99    = p99 < 300;

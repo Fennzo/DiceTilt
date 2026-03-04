@@ -112,7 +112,7 @@ async function run() {
   section('Auth');
   let jwt, userId, balanceBefore;
   try {
-    const auth = await apiFetch('/api/v1/dev/token?walletIndex=1');
+    const auth = await apiFetch('/api/v1/dev/token?walletIndex=301');
     jwt    = auth.token;
     userId = auth.userId;
     pass(`dev token acquired  userId=${userId.slice(0, 8)}…`);

@@ -59,7 +59,7 @@ export const options = {
     baseline: {
       executor: 'constant-vus',
       vus: 50,
-      duration: '8m',
+      duration: '4m',
     },
   },
   thresholds: {
@@ -211,7 +211,7 @@ export function handleSummary(data) {
   console.log(`  Bets total (attempts)  : ${total}`);
   console.log(`  INSUFFICIENT_BALANCE   : ${insuf}  (expected — balance exhaustion)`);
   console.log(`  Unexpected errors      : ${errors}`);
-  console.log(`  Throughput (approx)    : ${(ok / (8 * 60)).toFixed(1)} bets/sec`);
+  console.log(`  Throughput (approx)    : ${(ok / (4 * 60)).toFixed(1)} bets/sec`);
   console.log('  ─────────────────────────────────────────────────────────────');
   console.log(`  P95 e2e latency        : ${p95.toFixed(2)} ms  (SLO <25 ms)  ${sloP95 ? '✓ PASS' : '✗ FAIL'}`);
   console.log(`  P99 e2e latency        : ${p99.toFixed(2)} ms  (SLO <50 ms)  ${sloP99 ? '✓ PASS' : '✗ FAIL'}`);

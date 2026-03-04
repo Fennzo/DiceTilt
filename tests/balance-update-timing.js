@@ -91,10 +91,26 @@ async function getDevToken(walletIndex = 0) {
 
 function connectWs(jwt) {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`${WS_URL}?token=${jwt}`);
-    ws.once('open', () => resolve(ws));
-    ws.once('error', reject);
-    setTimeout(() => reject(new Error('WS connect timeout')), TIMEOUT_MS);
+    const timer = setTimeout(() => reject(new Error('WS connect timeout')), TIMEOUT_MS);
+    const ws = new WebSocket(WS_URL);
+    ws.once('error', (err) => { clearTimeout(timer); reject(err); });
+    ws.once('open', () => {
+      ws.send(JSON.stringify({ type: 'AUTH', token: jwt }));
+    });
+    ws.on('message', function authHandler(raw) {
+      try {
+        const msg = JSON.parse(raw.toString());
+        if (msg.type === 'AUTH_OK') {
+          clearTimeout(timer);
+          ws.removeListener('message', authHandler);
+          resolve(ws);
+        } else if (msg.type === 'ERROR') {
+          clearTimeout(timer);
+          ws.removeListener('message', authHandler);
+          reject(new Error(`AUTH rejected: ${msg.code}`));
+        }
+      } catch { /* skip non-JSON */ }
+    });
   });
 }
 
@@ -126,7 +142,7 @@ async function testWithdrawalBalanceImmediate() {
   console.log('\n[Test 1] Withdrawal: balance deducted immediately after 202 response');
   let jwt;
   try {
-    jwt = await getDevToken(0);
+    jwt = await getDevToken(300);
   } catch (e) {
     fail('get dev token', e.message);
     return;
@@ -196,7 +212,7 @@ async function testWithdrawalWsSignals() {
   let jwt, ws;
   try {
     // Use wallet index 3 to avoid balance interference with Test 1
-    jwt = await getDevToken(3);
+    jwt = await getDevToken(303);
     ws = await connectWs(jwt);
     pass('WebSocket connected');
   } catch (e) {
@@ -253,7 +269,7 @@ async function testDepositIdempotency() {
   let jwt;
   try {
     // Use wallet index 1 to avoid interfering with Test 1 (different user)
-    jwt = await getDevToken(1);
+    jwt = await getDevToken(301);
   } catch (e) {
     fail('get dev token (wallet 1)', e.message);
     return;
@@ -332,7 +348,7 @@ async function testDepositBalanceUpdateViaWs() {
 
   let jwt, ws;
   try {
-    jwt = await getDevToken(2);
+    jwt = await getDevToken(302);
     ws = await connectWs(jwt);
     pass('WebSocket connected for deposit WS test');
   } catch (e) {

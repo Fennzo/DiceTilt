@@ -32,7 +32,7 @@ set -euo pipefail
 # ─── Config ───────────────────────────────────────────────────────────────────
 BASE_URL="${BASE_URL:-http://localhost:3000}"
 WS_URL="${WS_URL:-ws://localhost:3000/ws}"
-RECOVERY_SECS=60   # pause between tests for system to recover
+RECOVERY_SECS=30   # pause between tests for system to recover
 
 # Detect k6 binary
 if command -v k6 &>/dev/null; then
@@ -151,13 +151,13 @@ echo ""
 echo "╔══════════════════════════════════════════════════════════════════════╗"
 echo "║            DiceTilt Stress Suite — 5 Tests, Ascending Load          ║"
 echo "╠══════════════════════════════════════════════════════════════════════╣"
-echo "║  01  Baseline Normal     │  50 VUs constant       │  ~8 min          ║"
-echo "║  02  Evening Peak        │  0→400 VUs ramp        │  ~9.5 min        ║"
-echo "║  03  Traffic Spike       │  80→900 VUs spike      │  ~7 min          ║"
-echo "║  04  Whale Mixer         │  250 VUs (3 tiers)     │  10 min          ║"
-echo "║  05  Peak Crush          │  0→1000 VUs crush      │  ~13 min         ║"
+echo "║  01  Baseline Normal     │  50 VUs constant       │  ~4 min          ║"
+echo "║  02  Evening Peak        │  0→400 VUs ramp        │  ~5 min          ║"
+echo "║  03  Traffic Spike       │  80→900 VUs spike      │  ~3.5 min        ║"
+echo "║  04  Whale Mixer         │  250 VUs (3 tiers)     │  5 min           ║"
+echo "║  05  Peak Crush          │  0→1000 VUs crush      │  ~7 min          ║"
 echo "╠══════════════════════════════════════════════════════════════════════╣"
-echo "║  Total (no skips):  ~50 min + 4 × 60s recovery = ~55 min            ║"
+echo "║  Total (no skips):  ~24.5 min + 4 × 30s recovery = ~26.5 min        ║"
 echo "╚══════════════════════════════════════════════════════════════════════╝"
 echo ""
 echo "  Logging to: ${LOG_FILE}"

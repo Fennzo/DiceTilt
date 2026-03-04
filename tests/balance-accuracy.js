@@ -96,10 +96,26 @@ async function getBalance(jwt, chain, currency) {
 
 function connectWs(jwt) {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`${WS_URL}?token=${jwt}`);
-    ws.once('open', () => resolve(ws));
-    ws.once('error', reject);
-    setTimeout(() => reject(new Error('WS connect timeout')), TIMEOUT);
+    const timer = setTimeout(() => reject(new Error('WS connect timeout')), TIMEOUT);
+    const ws = new WebSocket(WS_URL);
+    ws.once('error', (err) => { clearTimeout(timer); reject(err); });
+    ws.once('open', () => {
+      ws.send(JSON.stringify({ type: 'AUTH', token: jwt }));
+    });
+    ws.on('message', function authHandler(raw) {
+      try {
+        const msg = JSON.parse(raw.toString());
+        if (msg.type === 'AUTH_OK') {
+          clearTimeout(timer);
+          ws.removeListener('message', authHandler);
+          resolve(ws);
+        } else if (msg.type === 'ERROR') {
+          clearTimeout(timer);
+          ws.removeListener('message', authHandler);
+          reject(new Error(`AUTH rejected: ${msg.code}`));
+        }
+      } catch { /* skip non-JSON */ }
+    });
   });
 }
 
@@ -176,7 +192,7 @@ async function getTreasuryAddress() {
 
 async function testBetLossBalance() {
   console.log('\n[Test 1] ETH losing bet: balance = before - wager');
-  const { token: jwt } = await getDevToken(8);
+  const { token: jwt } = await getDevToken(308);
   const authHdr = { Authorization: `Bearer ${jwt}` };
 
   const before = await getBalance(jwt, 'ethereum', 'ETH');
@@ -228,7 +244,7 @@ async function testBetLossBalance() {
 
 async function testBetBalanceMatchesApi() {
   console.log('\n[Test 2] ETH bet: GET /balance always matches BET_RESULT settled balance');
-  const { token: jwt } = await getDevToken(8);
+  const { token: jwt } = await getDevToken(308);
 
   const ws = await connectWs(jwt);
   try {
@@ -259,7 +275,7 @@ async function testBetBalanceMatchesApi() {
 
 async function testSolBetBalance() {
   console.log('\n[Test 3] SOL bet: GET /balance matches BET_RESULT settled balance');
-  const { token: jwt } = await getDevToken(8);
+  const { token: jwt } = await getDevToken(308);
 
   const initialSol = await getBalance(jwt, 'solana', 'SOL');
   if (initialSol < 0.1) { fail('SOL balance sufficient', `${initialSol} SOL`); return; }
@@ -307,7 +323,7 @@ async function testDepositAccuracy() {
   }
 
   // Use walletIndex=9 for deposit tests (isolated from bet tests)
-  const { token: jwt, walletAddress } = await getDevToken(9);
+  const { token: jwt, walletAddress } = await getDevToken(309);
   const ws = await connectWs(jwt);
 
   try {

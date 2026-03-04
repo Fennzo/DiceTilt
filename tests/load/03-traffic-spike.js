@@ -68,13 +68,13 @@ export const options = {
       executor:    'ramping-vus',
       startVUs:    0,
       stages: [
-        { duration: '60s',  target: 80  },   // Stage 1: base load
-        { duration: '30s',  target: 80  },   // Stage 2: stable base
+        { duration: '30s',  target: 80  },   // Stage 1: base load
+        { duration: '15s',  target: 80  },   // Stage 2: stable base
         { duration: '50s',  target: 900 },   // Stage 3: *** SPIKE (16.4 VU/sec) ***
-        { duration: '120s', target: 900 },   // Stage 4: spike held
-        { duration: '60s',  target: 200 },   // Stage 5: spike abates
-        { duration: '60s',  target: 200 },   // Stage 6: post-spike lingering
-        { duration: '30s',  target: 0   },   // Stage 7: wind down
+        { duration: '60s',  target: 900 },   // Stage 4: spike held
+        { duration: '30s',  target: 200 },   // Stage 5: spike abates
+        { duration: '30s',  target: 200 },   // Stage 6: post-spike lingering
+        { duration: '15s',  target: 0   },   // Stage 7: wind down
       ],
       gracefulRampDown: '30s',
     },

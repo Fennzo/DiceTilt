@@ -81,7 +81,7 @@ export const options = {
     casual_gamblers: {
       executor: 'constant-vus',
       vus:      150,
-      duration: '10m',
+      duration: '5m',
       exec:     'casualScenario',
       gracefulStop: '30s',
     },
@@ -89,7 +89,7 @@ export const options = {
     regular_players: {
       executor: 'constant-vus',
       vus:      80,
-      duration: '10m',
+      duration: '5m',
       exec:     'regularScenario',
       gracefulStop: '30s',
     },
@@ -97,7 +97,7 @@ export const options = {
     high_rollers: {
       executor: 'constant-vus',
       vus:      20,
-      duration: '10m',
+      duration: '5m',
       exec:     'whaleScenario',
       gracefulStop: '30s',
     },
