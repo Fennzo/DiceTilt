@@ -11,7 +11,11 @@ function getTreasuryAddress(): string {
 
 export const config = {
   kafkaBrokers: (process.env.KAFKA_BROKERS || 'localhost:29092').split(','),
+  kafkaGroupId: process.env['KAFKA_GROUP_ID'] ?? 'evm-payout-group',
   evmRpcUrl: process.env.EVM_RPC_URL || 'http://127.0.0.1:8545',
   treasuryAddress: getTreasuryAddress(),
   privateKey: process.env.TREASURY_OWNER_PRIVATE_KEY || '',
+  payoutMaxRetries: parseInt(process.env['PAYOUT_MAX_RETRIES'] ?? '20', 10),
+  payoutMutexSpinMs: parseInt(process.env['PAYOUT_MUTEX_SPIN_MS'] ?? '50', 10),
+  metricsPort: parseInt(process.env['METRICS_PORT'] ?? '3020', 10),
 };

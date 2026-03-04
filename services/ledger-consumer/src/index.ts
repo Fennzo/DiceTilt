@@ -9,6 +9,9 @@ import {
   type WithdrawalCompletedEvent,
 } from '@dicetilt/shared-types';
 import { register, collectDefaultMetrics, Counter, Gauge } from 'prom-client';
+import { createLoggers } from '@dicetilt/logger';
+
+const { app: log, audit } = createLoggers('ledger-consumer');
 
 collectDefaultMetrics();
 const dlqTotal = new Counter({
@@ -22,14 +25,13 @@ const kafkaLag = new Gauge({
   labelNames: ['topic'],
 });
 
-// Pool tuned for burst: max 20 connections, explicit timeouts
 const pool = new pg.Pool({
   connectionString: config.dbUrl,
-  max: 20,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 5000,
+  max: config.dbPoolMax,
+  idleTimeoutMillis: config.dbIdleTimeoutMs,
+  connectionTimeoutMillis: config.dbConnectionTimeoutMs,
 });
-const redis = new Redis(config.redisUri, { maxRetriesPerRequest: 3 });
+const redis = new Redis(config.redisUri, { maxRetriesPerRequest: config.redisMaxRetries });
 
 // Atomically credit a deposit to Redis without overwriting accumulated bet P&L.
 // If the key exists (normal case): INCRBYFLOAT adds the deposit amount on top.
@@ -47,15 +49,27 @@ end
 
 // ─── Batch INSERT helper for BetResolved ─────────────────────────────────────
 
+// Cache the static placeholder string by row count so same-size batches never
+// rebuild it. Key = number of rows; value = "$1,$2,...,$11),($12,...)" string.
+const insertPlaceholderCache = new Map<number, string>();
+
+function getBetInsertPlaceholders(count: number): string {
+  const cached = insertPlaceholderCache.get(count);
+  if (cached) return cached;
+  const placeholders = Array.from({ length: count }, (_, i) => {
+    const b = i * 11;
+    return `($${b+1},$${b+2},$${b+3},$${b+4},$${b+5},$${b+6},$${b+7},$${b+8},$${b+9},$${b+10},$${b+11})`;
+  }).join(',');
+  insertPlaceholderCache.set(count, placeholders);
+  return placeholders;
+}
+
 async function batchInsertBets(events: BetResolvedEvent[]): Promise<void> {
   if (events.length === 0) return;
   const client = await pool.connect();
   try {
     // Unnest bulk insert: one round-trip for N rows
-    const placeholders = events.map((_, i) => {
-      const b = i * 11;
-      return `($${b+1},$${b+2},$${b+3},$${b+4},$${b+5},$${b+6},$${b+7},$${b+8},$${b+9},$${b+10},$${b+11})`;
-    }).join(',');
+    const placeholders = getBetInsertPlaceholders(events.length);
     const values = events.flatMap(ev => [
       ev.bet_id, ev.user_id, ev.chain, ev.currency,
       ev.wager_amount, ev.payout_amount, ev.game_result,
@@ -68,6 +82,18 @@ async function batchInsertBets(events: BetResolvedEvent[]): Promise<void> {
        ON CONFLICT (bet_id) DO NOTHING`,
       values,
     );
+    for (const ev of events) {
+      audit.info('Bet settled', {
+        event: 'BET_SETTLED',
+        betId: ev.bet_id,
+        userId: ev.user_id,
+        wager: ev.wager_amount,
+        payout: ev.payout_amount,
+        result: ev.game_result,
+        chain: ev.chain,
+        currency: ev.currency,
+      });
+    }
   } finally {
     client.release();
   }
@@ -109,9 +135,23 @@ async function processDepositReceived(ev: DepositReceivedEvent): Promise<boolean
     await redis.publish(`user:updates:${ev.user_id}`, JSON.stringify({
       type: 'BALANCE_UPDATE', chain: ev.chain, currency: ev.currency, balance: parseFloat(redisNewBalance),
     }));
+
+    audit.info('Deposit settled', {
+      event: 'DEPOSIT_SETTLED',
+      depositId: ev.deposit_id,
+      userId: ev.user_id,
+      amount: ev.amount,
+      chain: ev.chain,
+      currency: ev.currency,
+      txHash: ev.tx_hash,
+    });
     return true;
   } catch (err) {
-    console.error('[Ledger] DepositReceived error:', err);
+    audit.error('Deposit settlement failed', {
+      event: 'DEPOSIT_SETTLEMENT_FAILED',
+      depositId: ev.deposit_id,
+      error: String(err),
+    });
     dlqTotal.inc({ source_topic: 'DepositReceived' });
     return false;
   } finally {
@@ -123,14 +163,15 @@ async function processWithdrawalCompleted(ev: WithdrawalCompletedEvent): Promise
   const client = await pool.connect();
   try {
     // Idempotent: insert into withdrawals table, then deduct from wallets only if
-    // this is the first time we've seen this withdrawal_id (ON CONFLICT DO NOTHING
-    // skips the UPDATE via the CTE join). Redis is intentionally NOT overwritten here —
-    // it was already atomically deducted when the withdrawal was requested.
+    // this is the first time we've seen this tx_hash (ON CONFLICT DO NOTHING
+    // skips the UPDATE via the CTE join). Matches deposits.tx_hash dedup pattern.
+    // Redis is intentionally NOT overwritten here — it was already atomically
+    // deducted when the withdrawal was requested.
     await client.query(
       `WITH ins AS (
          INSERT INTO withdrawals (withdrawal_id, user_id, chain, currency, amount, to_address, tx_hash, completed_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-         ON CONFLICT (withdrawal_id) DO NOTHING
+         ON CONFLICT (tx_hash) DO NOTHING
          RETURNING withdrawal_id
        )
        UPDATE wallets w
@@ -160,9 +201,23 @@ async function processWithdrawalCompleted(ev: WithdrawalCompletedEvent): Promise
       withdrawalId: ev.withdrawal_id, chain: ev.chain,
       currency: ev.currency, txHash: ev.tx_hash, amount: ev.amount,
     }));
+
+    audit.info('Withdrawal recorded', {
+      event: 'WITHDRAWAL_RECORDED',
+      withdrawalId: ev.withdrawal_id,
+      userId: ev.user_id,
+      amount: ev.amount,
+      chain: ev.chain,
+      currency: ev.currency,
+      txHash: ev.tx_hash,
+    });
     return true;
   } catch (err) {
-    console.error('[Ledger] WithdrawalCompleted error:', err);
+    audit.error('Withdrawal settlement failed', {
+      event: 'WITHDRAWAL_SETTLEMENT_FAILED',
+      withdrawalId: ev.withdrawal_id,
+      error: String(err),
+    });
     dlqTotal.inc({ source_topic: 'WithdrawalCompleted' });
     return false;
   } finally {
@@ -173,16 +228,27 @@ async function processWithdrawalCompleted(ev: WithdrawalCompletedEvent): Promise
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function main() {
+  const { kafkaSessionTimeoutMs, kafkaHeartbeatIntervalMs } = config;
+  if (kafkaHeartbeatIntervalMs >= kafkaSessionTimeoutMs / 3) {
+    throw new Error(
+      `Kafka config invalid: heartbeatInterval (${kafkaHeartbeatIntervalMs}ms) must be < sessionTimeout/3 (${kafkaSessionTimeoutMs / 3}ms). ` +
+        `Got sessionTimeout=${kafkaSessionTimeoutMs}ms, heartbeatInterval=${kafkaHeartbeatIntervalMs}ms.`,
+    );
+  }
+
   const kafka = new Kafka({ clientId: 'ledger-consumer', brokers: config.kafkaBrokers });
   const consumer = kafka.consumer({
     groupId: config.kafkaGroupId,
-    sessionTimeout: 30000,
-    heartbeatInterval: 3000,
+    // sessionTimeout must exceed worst-case batch DB write time to avoid spurious
+    // rebalances. heartbeatInterval must be < sessionTimeout/3 (Kafka requirement).
+    sessionTimeout: kafkaSessionTimeoutMs,
+    heartbeatInterval: kafkaHeartbeatIntervalMs,
   });
   const admin = kafka.admin();
 
   await consumer.connect();
   await admin.connect();
+  log.info('Kafka consumer connected', { event: 'KAFKA_CONSUMER_CONNECTED', groupId: config.kafkaGroupId });
 
   const subscribedTopics = [
     KAFKA_TOPICS.BET_RESOLVED,
@@ -192,7 +258,6 @@ async function main() {
 
   await consumer.subscribe({ topics: subscribedTopics, fromBeginning: false });
 
-  // Poll Kafka consumer lag every 15 seconds
   const lagInterval = setInterval(async () => {
     try {
       for (const topic of subscribedTopics) {
@@ -217,7 +282,7 @@ async function main() {
     } catch {
       // Non-fatal: admin polling failure doesn't stop consumer
     }
-  }, 15000);
+  }, config.kafkaLagPollIntervalMs);
 
   // Use eachBatch with autoCommit:true for bulk processing.
   // Inserts are idempotent (ON CONFLICT DO NOTHING) so re-delivery on restart is safe.
@@ -227,14 +292,13 @@ async function main() {
       const { topic, messages } = batch;
 
       if (topic === KAFKA_TOPICS.BET_RESOLVED) {
-        // Bulk insert up to 500 rows per Postgres round-trip
-        const BATCH_SIZE = 500;
+        const BATCH_SIZE = config.betBatchSize;
         let i = 0;
         while (i < messages.length) {
-          const slice = messages.slice(i, i + BATCH_SIZE);
+          const end = Math.min(i + BATCH_SIZE, messages.length);
           const events: BetResolvedEvent[] = [];
-          for (const msg of slice) {
-            const raw = msg.value?.toString();
+          for (let j = i; j < end; j++) {
+            const raw = messages[j]!.value?.toString();
             if (raw) {
               try { events.push(JSON.parse(raw) as BetResolvedEvent); } catch { /* skip malformed */ }
             }
@@ -243,12 +307,20 @@ async function main() {
             try {
               await batchInsertBets(events);
             } catch (err) {
-              console.error('[Ledger] Batch BetResolved error:', err);
+              const batchBetIds = events.slice(0, 10).map((e) => e.bet_id);
+              log.error('Batch BetResolved error', {
+                event: 'BET_SETTLEMENT_FAILED',
+                batchSize: events.length,
+                messageRange: `${i}-${end}`,
+                batchBetIds,
+                ...(events.length > 10 && { batchTruncated: events.length - 10 }),
+                error: String(err),
+              });
               dlqTotal.inc({ source_topic: 'BetResolved' });
             }
           }
           await heartbeat();
-          i += BATCH_SIZE;
+          i = end;
         }
       } else {
         // Process deposit/withdrawal one at a time (rare events)
@@ -262,7 +334,7 @@ async function main() {
               await processWithdrawalCompleted(JSON.parse(raw) as WithdrawalCompletedEvent);
             }
           } catch (err) {
-            console.error('[Ledger] Parse error:', err);
+            log.error('Kafka message parse error', { event: 'KAFKA_MESSAGE_PARSE_ERROR', topic, error: String(err) });
             dlqTotal.inc({ source_topic: topic });
           }
           await heartbeat();
@@ -286,7 +358,7 @@ async function main() {
     res.statusCode = 404;
     res.end();
   });
-  server.listen(3030, () => console.log('[Ledger] Metrics :3030'));
+  server.listen(config.metricsPort, () => log.info('Service started', { event: 'SERVICE_STARTED', port: config.metricsPort }));
 
   process.on('SIGTERM', async () => {
     clearInterval(lagInterval);
@@ -298,7 +370,12 @@ async function main() {
   });
 }
 
+process.on('unhandledRejection', (reason) => {
+  log.error('Unhandled rejection', { event: 'STARTUP_FAILED', error: String(reason) });
+  process.exit(1);
+});
+
 main().catch((e) => {
-  console.error(e);
+  log.error('Fatal startup error', { event: 'STARTUP_FAILED', error: String(e), stack: (e as Error).stack });
   process.exit(1);
 });

@@ -12,12 +12,16 @@ This document covers the full PostgreSQL relational schema including all tables,
 erDiagram
     USERS ||--o{ WALLETS : "owns"
     USERS ||--o{ TRANSACTIONS : "places"
+    USERS ||--o{ DEPOSITS : "receives"
+    USERS ||--o{ WITHDRAWALS : "initiates"
+    USERS ||--o{ SEED_COMMITMENT_AUDIT : "has seed cycles"
     WALLETS {
         uuid   id              PK  "Surrogate PK"
         uuid   user_id         FK  "References users(id) CASCADE"
         varchar chain              "CHECK: ethereum | solana"
         varchar currency           "CHECK: ETH | SOL | USDC | USDT"
-        numeric balance            "CHECK: >= 0  — canonical source of truth"
+        numeric balance            "CHECK: >= 0  — available (non-escrowed) balance"
+        numeric balance_escrowed   "CHECK: >= 0  — funds currently held in active bets"
         integer current_nonce      "CHECK: >= 0  — checkpoint, live nonce in Redis"
         varchar wallet_address     "EVM hex or Solana base58 address"
         timestamptz created_at
@@ -30,6 +34,14 @@ erDiagram
         varchar previous_server_seed "Revealed on rotation — client verification"
         timestamptz created_at
         timestamptz updated_at     "Auto-maintained by trigger"
+    }
+    SEED_COMMITMENT_AUDIT {
+        bigint  id              PK  "BIGSERIAL — auto-increment"
+        uuid    user_id         FK  "References users(id) RESTRICT"
+        varchar seed_commitment     "SHA256(server_seed) — pre-image never stored here"
+        timestamptz committed_at   "Immutable — set on INSERT, never updated"
+        varchar revealed_seed      "NULL until rotation — the raw seed for PF verification"
+        timestamptz revealed_at    "NULL until rotation"
     }
     TRANSACTIONS {
         uuid    bet_id         PK  "Idempotency key — supplied by API Gateway, NOT auto-generated"
@@ -44,116 +56,162 @@ erDiagram
         varchar outcome_hash       "HMAC-SHA256(ServerSeed:ClientSeed:Nonce)"
         timestamptz executed_at    "DEFAULT NOW() — immutable after insert"
     }
+    DEPOSITS {
+        uuid    deposit_id     PK  "Idempotency key — UUID from EVM Listener / Solana Listener"
+        uuid    user_id        FK  "References users(id) RESTRICT"
+        varchar chain              "CHECK: ethereum | solana"
+        varchar currency           "CHECK: ETH | SOL | USDC | USDT"
+        numeric amount             "Deposit amount, NUMERIC(30,8)"
+        varchar wallet_address     "On-chain sender address"
+        varchar tx_hash        UK  "UNIQUE — cross-restart deduplication key"
+        bigint  block_number       "EVM block number or Solana slot"
+        timestamptz deposited_at
+    }
+    WITHDRAWALS {
+        uuid    withdrawal_id  PK  "Idempotency key — same UUID as WithdrawalRequested event"
+        uuid    user_id        FK  "References users(id) RESTRICT"
+        varchar chain              "CHECK: ethereum | solana — part of composite UQ"
+        varchar currency           "CHECK: ETH | SOL | USDC | USDT"
+        numeric amount             "Withdrawal amount, NUMERIC(30,8)"
+        varchar to_address         "On-chain recipient address"
+        varchar tx_hash            "Part of composite UQ(tx_hash, chain)"
+        timestamptz completed_at   "Timestamp of on-chain confirmation"
+        unique  UQ_tx_hash_chain   "UNIQUE(tx_hash, chain) — multi‑chain deduplication"
+    }
 ```
 
 ---
 
 ## 2. Full `init.sql`
 
-This file is mounted into the PostgreSQL container as an init script and executes on first boot.
+This file is mounted into the PostgreSQL container as an init script and executes on first boot. For existing databases (persisted volumes), run migrations in `db/migrations/` to apply schema changes.
 
 ```sql
 -- =============================================================
 -- DiceTilt PostgreSQL Schema
 -- Mounted at: /docker-entrypoint-initdb.d/init.sql
 -- Executes once on first container boot.
--- All subsequent changes must be applied via numbered migrations.
 -- =============================================================
 
--- Enable UUID generation
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- =============================================================
 -- TABLE: users
--- One row per authenticated wallet. Tracks Provably Fair state.
 -- =============================================================
 CREATE TABLE IF NOT EXISTS users (
     id                   UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
     active_server_seed   VARCHAR(64)  NOT NULL,
-    previous_server_seed VARCHAR(64),                    -- NULL until first seed rotation
+    previous_server_seed VARCHAR(64),
     created_at           TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at           TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
-COMMENT ON TABLE  users IS
-    'Player identity and Provably Fair seed lifecycle state. '
-    'One row per authenticated wallet address.';
-
-COMMENT ON COLUMN users.active_server_seed IS
-    'Hidden HMAC-SHA256 key for the current bet cycle. '
-    'Never returned to the client mid-cycle. Revealed only on explicit rotation.';
-
-COMMENT ON COLUMN users.previous_server_seed IS
-    'The seed revealed after a rotation event. '
-    'Client uses this to locally verify every outcome hash in the completed cycle.';
-
-
 -- =============================================================
 -- TABLE: wallets
--- Multi-chain canonical balance ledger.
--- One row per (user_id, chain, currency) combination.
--- Redis is a write-through cache of the balance column.
 -- =============================================================
 CREATE TABLE IF NOT EXISTS wallets (
-    id             UUID          PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id        UUID          NOT NULL
-                       REFERENCES users(id) ON DELETE CASCADE,
-    chain          VARCHAR(20)   NOT NULL,
-    currency       VARCHAR(10)   NOT NULL,
-    balance        NUMERIC(30,8) NOT NULL DEFAULT 0,
-    current_nonce  INTEGER       NOT NULL DEFAULT 0,
-    wallet_address VARCHAR(100)  NOT NULL,
-    created_at     TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
-    updated_at     TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    id                UUID          PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id           UUID          NOT NULL
+                          REFERENCES users(id) ON DELETE CASCADE,
+    chain             VARCHAR(20)   NOT NULL,
+    currency          VARCHAR(10)   NOT NULL,
+    balance           NUMERIC(30,8) NOT NULL DEFAULT 0,
+    -- C3/H6 — Escrow: funds currently in active (in-play) bets.
+    -- Authoritative live value is in Redis; this column is for audit/reconciliation.
+    balance_escrowed  NUMERIC(30,8) NOT NULL DEFAULT 0,
+    current_nonce     INTEGER       NOT NULL DEFAULT 0,
+    wallet_address    VARCHAR(100)  NOT NULL,
+    created_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
 
     CONSTRAINT chk_wallets_nonce_non_negative
         CHECK (current_nonce >= 0),
-
     CONSTRAINT chk_wallets_chain_valid
         CHECK (chain IN ('ethereum', 'solana')),
-
     CONSTRAINT chk_wallets_currency_valid
         CHECK (currency IN ('ETH', 'SOL', 'USDC', 'USDT')),
-
     CONSTRAINT chk_wallets_balance_non_negative
         CHECK (balance >= 0),
-
+    CONSTRAINT chk_wallets_escrowed_non_negative
+        CHECK (balance_escrowed >= 0),
     CONSTRAINT uq_user_chain_currency
         UNIQUE (user_id, chain, currency)
 );
 
-COMMENT ON TABLE  wallets IS
-    'Multi-chain balance and nonce ledger. Canonical source of truth. '
-    'Redis mirrors wallet.balance keyed by user:{id}:balance:{chain}:{currency} '
-    'and wallet.current_nonce keyed by user:{id}:nonce:{chain}:{currency}. '
-    'Synced by Ledger Consumer on every DepositReceived or BetResolved event.';
+-- =============================================================
+-- TABLE: seed_commitment_audit (H2/M9)
+-- Immutable append-only audit trail of every server seed cycle.
+-- committed_at is DB-set on INSERT and never updated.
+-- revealed_seed / revealed_at are filled exactly once on rotation.
+-- =============================================================
+CREATE TABLE IF NOT EXISTS seed_commitment_audit (
+    id              BIGSERIAL     PRIMARY KEY,
+    user_id         UUID          NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    seed_commitment VARCHAR(64)   NOT NULL,
+    committed_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    revealed_seed   VARCHAR(64),
+    revealed_at     TIMESTAMPTZ,
+    CONSTRAINT revealed_pair_check
+        CHECK ((revealed_seed IS NULL AND revealed_at IS NULL) OR (revealed_seed IS NOT NULL AND revealed_at IS NOT NULL))
+);
 
-COMMENT ON COLUMN wallets.current_nonce IS
-    'Checkpoint/recovery copy of the Provably Fair nonce for this chain+currency. '
-    'The live nonce counter lives in Redis (user:{id}:nonce:{chain}:{currency}) '
-    'for atomic Lua script access. On Redis cache miss, hydrate from this column. '
-    'Recovery query: SELECT MAX(nonce_used) FROM transactions WHERE user_id=$1 AND chain=$2 AND currency=$3.';
+CREATE INDEX IF NOT EXISTS idx_seed_audit_user_id
+    ON seed_commitment_audit (user_id);
+CREATE INDEX IF NOT EXISTS idx_seed_audit_committed_at
+    ON seed_commitment_audit (committed_at DESC);
 
-COMMENT ON COLUMN wallets.balance IS
-    'The authoritative balance. Redis caches this value for sub-millisecond bet resolution. '
-    'On Redis cache miss, the API Gateway reads this column to hydrate Redis before betting.';
+-- TRIGGER: prevent_audit_mutation — append-only with one-time reveal.
+-- trg_seed_audit_no_delete, trg_seed_audit_no_update reject all DELETE and
+-- any UPDATE except the single transition of revealed_seed/revealed_at from NULL to NOT NULL.
+-- See db/init.sql for full trigger definition.
 
-COMMENT ON COLUMN wallets.chain IS
-    'Blockchain identifier. Constrained to supported chains. '
-    'Extend to new chains (e.g., tron, bitcoin) via ALTER TABLE and CHECK constraint update.';
+-- =============================================================
+-- TABLE: deposits (idempotency for DepositReceived Kafka events)
+-- =============================================================
+CREATE TABLE IF NOT EXISTS deposits (
+    deposit_id     UUID          PRIMARY KEY,
+    user_id        UUID          NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    chain          VARCHAR(20)   NOT NULL,
+    currency       VARCHAR(10)   NOT NULL,
+    amount         NUMERIC(30,8) NOT NULL,
+    wallet_address VARCHAR(100)  NOT NULL,
+    tx_hash        VARCHAR(100)  NOT NULL,
+    block_number   BIGINT        NOT NULL,
+    deposited_at   TIMESTAMPTZ   NOT NULL,
+    CONSTRAINT chk_deposits_chain_valid CHECK (chain IN ('ethereum', 'solana')),
+    CONSTRAINT chk_deposits_currency_valid CHECK (currency IN ('ETH', 'SOL', 'USDC', 'USDT')),
+    CONSTRAINT chk_deposits_amount_positive CHECK (amount > 0),
+    CONSTRAINT uq_deposits_tx_hash UNIQUE (tx_hash)
+);
 
-COMMENT ON COLUMN wallets.wallet_address IS
-    'EVM: 0x-prefixed 20-byte hex address. '
-    'Solana: Base58-encoded 32-byte public key.';
+CREATE INDEX IF NOT EXISTS idx_deposits_user_id ON deposits (user_id);
+
+-- =============================================================
+-- TABLE: withdrawals (idempotency for WithdrawalCompleted Kafka events)
+CREATE TABLE IF NOT EXISTS withdrawals (
+    withdrawal_id  UUID          PRIMARY KEY,
+    user_id        UUID          NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    chain          VARCHAR(20)   NOT NULL,
+    currency       VARCHAR(10)   NOT NULL,
+    amount         NUMERIC(30,8) NOT NULL,
+    to_address     VARCHAR(100)  NOT NULL,
+    tx_hash        VARCHAR(100)  NOT NULL,
+    completed_at   TIMESTAMPTZ   NOT NULL,
+    CONSTRAINT chk_withdrawals_chain_valid CHECK (chain IN ('ethereum', 'solana')),
+    CONSTRAINT chk_withdrawals_currency_valid CHECK (currency IN ('ETH', 'SOL', 'USDC', 'USDT')),
+    CONSTRAINT chk_withdrawals_amount_positive CHECK (amount > 0),
+    CONSTRAINT uq_withdrawals_tx_hash UNIQUE (tx_hash, chain)
+);
+
+CREATE INDEX IF NOT EXISTS idx_withdrawals_user_id ON withdrawals (user_id);
 
 -- =============================================================
 -- TABLE: transactions
 -- Immutable append-only bet ledger. Never updated after insert.
 -- bet_id is the Kafka-supplied UUID — NOT auto-generated.
--- This is the idempotency key enabling ON CONFLICT DO NOTHING.
 -- =============================================================
 CREATE TABLE IF NOT EXISTS transactions (
-    bet_id        UUID          PRIMARY KEY,            -- Supplied by API Gateway, NOT uuid_generate_v4()
+    bet_id        UUID          PRIMARY KEY,
     user_id       UUID          NOT NULL
                       REFERENCES users(id) ON DELETE RESTRICT,
     chain         VARCHAR(20)   NOT NULL,
@@ -168,68 +226,47 @@ CREATE TABLE IF NOT EXISTS transactions (
 
     CONSTRAINT chk_tx_chain_valid
         CHECK (chain IN ('ethereum', 'solana')),
-
     CONSTRAINT chk_tx_currency_valid
         CHECK (currency IN ('ETH', 'SOL', 'USDC', 'USDT')),
-
     CONSTRAINT chk_tx_wager_positive
         CHECK (wager_amount > 0),
-
     CONSTRAINT chk_tx_payout_non_negative
         CHECK (payout_amount >= 0),
-
     CONSTRAINT chk_tx_result_in_range
         CHECK (game_result BETWEEN 1 AND 100),
-
     CONSTRAINT chk_tx_nonce_non_negative
         CHECK (nonce_used >= 0)
 );
-
-COMMENT ON TABLE  transactions IS
-    'Immutable bet ledger. Append-only: rows are never updated or deleted. '
-    'The Ledger Consumer inserts rows using ON CONFLICT (bet_id) DO NOTHING. '
-    'If Kafka re-delivers the same message (offset not committed), the second insert is silently skipped.';
-
-COMMENT ON COLUMN transactions.bet_id IS
-    'Idempotency key. Generated by the API Gateway as a UUID v4 per bet. '
-    'Passed through Kafka to the Ledger Consumer. '
-    'ON CONFLICT (bet_id) DO NOTHING guarantees exactly-once DB writes '
-    'even under at-least-once Kafka delivery.';
-
-COMMENT ON COLUMN transactions.payout_amount IS
-    '0 on a loss. Equal to wager_amount * multiplier on a win. '
-    'The win condition is game_result < playerTarget (configurable per game variant).';
-
-COMMENT ON COLUMN transactions.outcome_hash IS
-    'HMAC-SHA256(activeServerSeed : clientSeed : nonceUsed). '
-    'Cryptographic proof of a predetermined, unmanipulated outcome. '
-    'Verifiable by the client after seed rotation reveals activeServerSeed.';
-
-COMMENT ON COLUMN transactions.client_seed IS
-    'Player-provided entropy string. Stored verbatim. '
-    'Allows the player to prove their own contribution to the outcome hash.';
 
 -- =============================================================
 -- INDEXES
 -- =============================================================
 
--- wallet lookup by user (balance hydration, wallet list)
 CREATE INDEX IF NOT EXISTS idx_wallets_user_id
     ON wallets (user_id);
 
--- bet history by user (Provably Fair audit, admin view)
+-- Prevents multiple users from sharing the same real wallet address on
+-- the same chain. Partial: excludes the Solana placeholder used until
+-- real Solana addresses are linked.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_wallets_unique_address_chain
+    ON wallets (LOWER(wallet_address), chain)
+    WHERE wallet_address != 'placeholder-solana-address';
+
+CREATE INDEX IF NOT EXISTS idx_deposits_user_id
+    ON deposits (user_id);
+
+CREATE INDEX IF NOT EXISTS idx_withdrawals_user_id
+    ON withdrawals (user_id);
+
 CREATE INDEX IF NOT EXISTS idx_transactions_user_id
     ON transactions (user_id);
 
--- time-series queries (recent bets, admin dashboard)
 CREATE INDEX IF NOT EXISTS idx_transactions_executed_at
     ON transactions (executed_at DESC);
 
--- compound: user bet history sorted by time (most common query pattern)
 CREATE INDEX IF NOT EXISTS idx_transactions_user_executed
     ON transactions (user_id, executed_at DESC);
 
--- seed lookup during Provably Fair status check
 CREATE INDEX IF NOT EXISTS idx_users_active_seed
     ON users (active_server_seed);
 
@@ -275,10 +312,24 @@ CREATE TRIGGER trg_wallets_updated_at
 | `user_id` | `UUID` | `NOT NULL REFERENCES users(id) ON DELETE CASCADE` | `CASCADE` — deleting a user removes all their wallets. Referential integrity enforced at DB level. |
 | `chain` | `VARCHAR(20)` | `CHECK IN ('ethereum', 'solana')` | Prevents invalid chain strings from entering the system. Adding new chains requires an explicit schema migration, not just a code change. |
 | `currency` | `VARCHAR(10)` | `CHECK IN ('ETH', 'SOL', 'USDC', 'USDT')` | Same principle. Enforces supported currency list at the data layer. |
-| `balance` | `NUMERIC(30,8)` | `NOT NULL DEFAULT 0`, `CHECK >= 0` | `NUMERIC` (not `FLOAT`) prevents floating-point precision loss in financial calculations. 30 digits total, 8 decimal places. Non-negative prevents accidental debt states. |
+| `balance` | `NUMERIC(30,8)` | `NOT NULL DEFAULT 0`, `CHECK >= 0` | Available (spendable) balance. Does not include escrowed funds. `NUMERIC` (not `FLOAT`) prevents floating-point precision loss. |
+| `balance_escrowed` | `NUMERIC(30,8)` | `NOT NULL DEFAULT 0`, `CHECK >= 0` | **(C3/H6)** Funds held in active bets. Authoritative live value is Redis `user:{id}:escrowed:{chain}:{currency}`; this column exists for audit and reconciliation. Non-negative enforced at DB level. |
 | `current_nonce` | `INTEGER` | `NOT NULL DEFAULT 0`, `CHECK >= 0` | Checkpoint/recovery copy of the Provably Fair nonce for this chain+currency. The live nonce lives in Redis (`user:{id}:nonce:{chain}:{currency}`). Mirrors Redis exactly — one nonce per wallet, not a global user nonce. On Redis miss, hydrate from this column. |
 | `wallet_address` | `VARCHAR(100)` | `NOT NULL` | EVM addresses are 42 chars (0x + 40 hex). Solana addresses are 44 chars (base58). 100 provides headroom. |
 | *(composite)* | — | `UNIQUE (user_id, chain, currency)` | Prevents duplicate wallet rows for the same user+chain+currency. The Ledger Consumer upserts against this unique constraint on deposit. |
+
+### 3.6 `seed_commitment_audit` (H2/M9)
+
+Immutable append-only log of every server seed lifecycle. One row is inserted at user registration (committed), and exactly one `UPDATE` fills `revealed_seed`/`revealed_at` when the seed is rotated. The raw seed is stored only upon revelation so users can independently verify `SHA256(revealed_seed) === seed_commitment`. `revealed_pair_check` enforces that `revealed_seed` and `revealed_at` are always paired (both NULL or both NOT NULL). DB-level immutability is enforced by `prevent_audit_mutation` triggers (`trg_seed_audit_no_delete`, `trg_seed_audit_no_update`): all DELETE and any UPDATE except the one-time reveal (NULL → NOT NULL for `revealed_seed`/`revealed_at`) raise an exception.
+
+| Column | Type | Constraints | Rationale |
+|---|---|---|---|
+| `id` | `BIGSERIAL` | `PRIMARY KEY` | Auto-increment surrogate — no UUID needed since rows are never referenced externally. |
+| `user_id` | `UUID` | `NOT NULL REFERENCES users(id) ON DELETE RESTRICT` | `RESTRICT` — preserves audit trail even if the user record is soft-deleted. |
+| `seed_commitment` | `VARCHAR(64)` | `NOT NULL` | SHA256 hex digest of the server seed. **The pre-image (raw seed) is never stored here until revealed.** |
+| `committed_at` | `TIMESTAMPTZ` | `NOT NULL DEFAULT NOW()` | Set by the DB on INSERT. Never updated. Immutable timestamp of when the commitment was made public. |
+| `revealed_seed` | `VARCHAR(64)` | nullable | `NULL` until seed rotation. Filled with the raw server seed so users can verify `SHA256(revealed_seed) === seed_commitment` for any historical bet. |
+| `revealed_at` | `TIMESTAMPTZ` | nullable | `NULL` until rotation. The `UPDATE ... WHERE revealed_seed IS NULL` guard ensures idempotency — only the first rotation call fills these columns. |
 
 ### 3.3 `transactions`
 
@@ -293,6 +344,37 @@ CREATE TRIGGER trg_wallets_updated_at
 | `outcome_hash` | `VARCHAR(128)` | `NOT NULL` | HMAC-SHA256 output is 64 hex chars. 128 provides headroom for algorithm variants. |
 | `executed_at` | `TIMESTAMPTZ` | `NOT NULL DEFAULT NOW()` | Immutable timestamp. Never updated. Timezone-aware. |
 
+### 3.4 `deposits`
+
+Idempotency table for `DepositReceived` Kafka events. The EVM Listener (and future Solana Listener) writes one row per on-chain deposit transaction. The `UNIQUE(tx_hash)` constraint is the second deduplication layer — Layer 1 is the in-memory `seenTxHashes` Set in the listener process; Layer 2 is this DB check, which survives listener restarts and guards against Anvil replaying historical events on every new WS subscription.
+
+| Column | Type | Constraints | Rationale |
+|---|---|---|---|
+| `deposit_id` | `UUID` | `PRIMARY KEY` | UUID supplied by the EVM Listener per detected event. Idempotency key for the Ledger Consumer insert. |
+| `user_id` | `UUID` | `NOT NULL REFERENCES users(id) ON DELETE RESTRICT` | `RESTRICT` — preserves deposit history even if the user record is soft-deleted. |
+| `chain` | `VARCHAR(20)` | `CHECK IN ('ethereum', 'solana')` | Matches the `DepositReceivedEvent.chain` field. |
+| `currency` | `VARCHAR(10)` | `CHECK IN ('ETH', 'SOL', 'USDC', 'USDT')` | Currency of the deposited asset. |
+| `amount` | `NUMERIC(30,8)` | `NOT NULL`, `CHECK > 0` | Deposit amount normalised to 8 decimal places. Zero or negative amounts rejected by `chk_deposits_amount_positive`. |
+| `wallet_address` | `VARCHAR(100)` | `NOT NULL` | On-chain sender address. EVM: `0x`-prefixed hex; Solana: base58 public key. |
+| `tx_hash` | `VARCHAR(100)` | `NOT NULL`, `UNIQUE` | On-chain transaction hash / Solana signature. **The deduplication key.** A second insert with the same `tx_hash` fails with a unique constraint violation, preventing double-credit. |
+| `block_number` | `BIGINT` | `NOT NULL` | EVM block number or Solana slot. Used for audit and re-indexing. |
+| `deposited_at` | `TIMESTAMPTZ` | `NOT NULL` | Timestamp of detection (ISO 8601 from the listener). |
+
+### 3.5 `withdrawals`
+
+Audit and idempotency table for `WithdrawalCompleted` Kafka events. One row is inserted by the Ledger Consumer after the EVM Payout Worker (or Solana Payout Worker) mines the on-chain payout transaction. The `UNIQUE (tx_hash, chain)` constraint ensures idempotency and **per-chain** deduplication (unlike deposits' cross-chain `UNIQUE (tx_hash)`).
+
+| Column | Type | Constraints | Rationale |
+|---|---|---|---|
+| `withdrawal_id` | `UUID` | `PRIMARY KEY` | Same UUID as the originating `WithdrawalRequestedEvent`. Row identity. |
+| `user_id` | `UUID` | `NOT NULL REFERENCES users(id) ON DELETE RESTRICT` | `RESTRICT` — preserves withdrawal history. |
+| `chain` | `VARCHAR(20)` | `CHECK IN ('ethereum', 'solana')` | Chain the withdrawal was executed on. |
+| `currency` | `VARCHAR(10)` | `CHECK IN ('ETH', 'SOL', 'USDC', 'USDT')` | Asset withdrawn. |
+| `amount` | `NUMERIC(30,8)` | `NOT NULL` | Withdrawn amount. |
+| `to_address` | `VARCHAR(100)` | `NOT NULL` | On-chain recipient address. |
+| `tx_hash` | `VARCHAR(100)` | `NOT NULL`, part of `UNIQUE (tx_hash, chain)` | On-chain transaction hash / Solana signature produced by the payout worker. Part of the composite deduplication key with `chain`. A second insert with the same `(tx_hash, chain)` fails (or is skipped via `ON CONFLICT (tx_hash, chain) DO NOTHING`), preventing duplicate on-chain withdrawal records per chain. |
+| `completed_at` | `TIMESTAMPTZ` | `NOT NULL` | Timestamp the payout worker confirmed the transaction. |
+
 ---
 
 ## 4. Index Strategy
@@ -300,12 +382,19 @@ CREATE TRIGGER trg_wallets_updated_at
 | Index | Table | Columns | Type | Purpose |
 |---|---|---|---|---|
 | `idx_wallets_user_id` | `wallets` | `(user_id)` | B-tree | Balance hydration on cache miss: `SELECT balance FROM wallets WHERE user_id = $1 AND chain = $2 AND currency = $3` |
+| `idx_wallets_unique_address_chain` | `wallets` | `(LOWER(wallet_address), chain)` | Partial unique | Prevents two users from registering the same wallet address on the same chain. Partial: excludes `'placeholder-solana-address'` which all users share until real Solana addresses are supported. |
+| `idx_deposits_user_id` | `deposits` | `(user_id)` | B-tree | Lookup all deposits for a user (audit, balance reconciliation) |
+| `idx_withdrawals_user_id` | `withdrawals` | `(user_id)` | B-tree | Lookup all withdrawals for a user (audit panel) |
 | `idx_transactions_user_id` | `transactions` | `(user_id)` | B-tree | Fetch all bets for a user (Provably Fair audit panel) |
 | `idx_transactions_executed_at` | `transactions` | `(executed_at DESC)` | B-tree | Time-series queries: recent platform-wide activity, admin dashboard |
 | `idx_transactions_user_executed` | `transactions` | `(user_id, executed_at DESC)` | B-tree | Compound: user-specific history sorted by recency — most frequent query pattern |
 | `idx_users_active_seed` | `users` | `(active_server_seed)` | B-tree | Provably Fair status checks: lookup current seed commitment by seed value |
 
 > **Note on `transactions`:** The table is append-only and high-frequency. All writes are inserts (never updates or deletes). The primary workload is write-heavy (Ledger Consumer inserts) with infrequent full-history reads (audit). Indexes are intentionally minimal to avoid write amplification.
+>
+> **Note on `deposits.tx_hash`:** The `UNIQUE` constraint on `tx_hash` already provides an implicit index that the Ledger Consumer's `ON CONFLICT (tx_hash)` uses for deduplication lookups. The explicit `idx_deposits_user_id` is separate and covers user-scoped queries only.
+>
+> **Note on `withdrawals.tx_hash`:** Unlike deposits, withdrawals use `UNIQUE (tx_hash, chain)` for **per-chain** deduplication — the same `tx_hash` can exist on different chains (EVM vs Solana have separate address spaces). The Ledger Consumer must use `ON CONFLICT (tx_hash, chain) DO NOTHING` to match this constraint. Deposits use `UNIQUE (tx_hash)` for **cross-chain** deduplication (a single tx_hash is globally unique across all chains); deposits therefore use `ON CONFLICT (tx_hash) DO NOTHING`.
 
 ---
 
@@ -315,8 +404,9 @@ Redis is the primary speed layer. All keys follow a structured naming convention
 
 | Key Pattern | Type | TTL | Written By | Read By | Purpose |
 |---|---|---|---|---|---|
-| `user:{userId}:balance:{chain}:{currency}` | `STRING` (NUMERIC) | None (persistent until eviction) | Ledger Consumer (deposit), API Gateway Lua (bet deduction/credit) | API Gateway Lua (balance check) | Atomic balance operations. The Lua script reads and writes this key in a single `EVAL` block, preventing race conditions. |
-| `user:{userId}:nonce:{chain}:{currency}` | `STRING` (integer) | None | API Gateway Lua (atomic INCR on bet) | API Gateway Lua (read+increment in same EVAL as balance deduct) | **Master of Nonce** — Provably Fair nonce lives in Redis, not Postgres. Prevents duplicate nonces on Gateway restart or race conditions. |
+| `user:{userId}:balance:{chain}:{currency}` | `STRING` (NUMERIC) | None (persistent until eviction) | Ledger Consumer (deposit), API Gateway Lua (`ESCROW_BET_LUA` deducts, `SETTLE_BET_LUA` credits payout) | API Gateway Lua (balance check) | **Available** balance. Deducted atomically when a bet is escrowed; credited when a bet settles (payout). |
+| `user:{userId}:escrowed:{chain}:{currency}` | `STRING` (NUMERIC) | None | API Gateway Lua (`ESCROW_BET_LUA` adds wager, `SETTLE_BET_LUA` / `RELEASE_ESCROW_LUA` deducts) | API Gateway (informational) | **(C3/H6) In-play** balance. Holds funds for the duration of an active bet (~<20ms). Zero when no bet is in flight. On re-auth, `initUserRedisState` only zeros escrow when it is already 0 (avoids racing with in-flight bets; settle/release handle non-zero escrow). |
+| `user:{userId}:nonce:{chain}:{currency}` | `STRING` (integer) | None | API Gateway Lua (atomic INCR on bet via `ESCROW_BET_LUA`) | API Gateway Lua (read+increment in same EVAL as escrow) | **Master of Nonce** — Provably Fair nonce lives in Redis, not Postgres. Prevents duplicate nonces on Gateway restart or race conditions. |
 | `user:{userId}:serverSeed` | `STRING` (hex) | None | API Gateway (on registration and seed rotation) | API Gateway (read before calling PF Worker) | Active server seed for Provably Fair. The PF Worker is stateless — the Gateway reads this key and passes the seed to the PF Worker on every `/calculate` call. Postgres `users.active_server_seed` is the canonical backup. |
 | `user:updates:{userId}` | Pub/Sub channel | — | Ledger Consumer (PUBLISH) | API Gateway (SUBSCRIBE) | Real-time notifications. Ledger publishes after DepositReceived or WithdrawalCompleted; Gateway pushes BALANCE_UPDATE / WITHDRAWAL_COMPLETED to WebSocket. |
 | `session:{userId}` | `STRING` (`"active"` marker) | 24h (configurable via `JWT_SESSION_TTL`) | API Gateway (on EIP-712 auth success) | API Gateway (on every authenticated request) | Session registry. Every request validates the JWT **and** this key's existence. Admin can delete the key to instantly revoke a session, regardless of JWT expiry. |
@@ -340,13 +430,18 @@ sequenceDiagram
     API->>Redis: SET user:{id}:balance:ethereum:ETH "100.00000000"
     Note over API: Proceed with Lua betting script
 
-    Note over LC, Redis: Post-Deposit Balance Sync
+    Note over LC, Redis: Post-Deposit Balance Sync (DEPOSIT_CREDIT_LUA)
+    LC->>PG: INSERT INTO deposits ... ON CONFLICT (tx_hash) DO NOTHING
     LC->>PG: INSERT INTO wallets ON CONFLICT (user_id,chain,currency) DO UPDATE SET balance = balance + $amount
     PG-->>LC: updated row
-    LC->>Redis: SET user:{id}:balance:ethereum:ETH {newBalance}
+    LC->>Redis: EVAL DEPOSIT_CREDIT_LUA — INCRBYFLOAT if key exists, SET {pgBalance} if absent
+    Note over Redis: INCRBYFLOAT preserves accumulated bet P&L on top of the deposit credit.
+    Note over Redis: SET (fallback) only fires if Redis was restarted — recovers from Postgres balance.
     LC->>Redis: PUBLISH user:updates:{id} { type: "balance_update", chain, currency, balance }
     Note over API: API Gateway (subscribed) receives Pub/Sub message → pushes BALANCE_UPDATE to WebSocket
 ```
+
+> **Why `INCRBYFLOAT` instead of `SET`:** A plain `SET` would overwrite the Redis balance with the Postgres wallet balance, which only tracks deposits and withdrawals — **not** bet P&L. For example: a user bets their balance from 10 ETH down to 7.01 ETH (tracked only in Redis), then deposits 0.5 ETH (Postgres balance becomes 10.5). A plain `SET` would overwrite 7.01 with 10.5, silently crediting an extra 3 ETH. `INCRBYFLOAT` adds 0.5 to the existing Redis value (7.01 → 7.51), correctly composing the deposit credit with accumulated bet P&L.
 
 ---
 

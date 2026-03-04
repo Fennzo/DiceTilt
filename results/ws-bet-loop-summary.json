@@ -1,0 +1,299 @@
+{
+  "root_group": {
+    "groups": [
+      {
+        "id": "5c0f8025f7e0b6654089e5b00e950f1a",
+        "groups": [],
+        "checks": [
+            {
+              "path": "::setup::balance endpoint reachable",
+              "id": "4fa63297dc03c47029d68544f9ebed59",
+              "passes": 1,
+              "fails": 0,
+              "name": "balance endpoint reachable"
+            }
+          ],
+        "name": "setup",
+        "path": "::setup"
+      }
+    ],
+    "checks": [],
+    "name": "",
+    "path": "",
+    "id": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "options": {
+    "summaryTrendStats": [
+      "avg",
+      "min",
+      "med",
+      "max",
+      "p(90)",
+      "p(95)"
+    ],
+    "summaryTimeUnit": "",
+    "noColor": false
+  },
+  "state": {
+    "testRunDurationMs": 45269.3064,
+    "isStdOutTTY": false,
+    "isStdErrTTY": false
+  },
+  "metrics": {
+    "vus_max": {
+      "type": "gauge",
+      "contains": "default",
+      "values": {
+        "value": 50,
+        "min": 50,
+        "max": 50
+      }
+    },
+    "ws_connecting": {
+      "type": "trend",
+      "contains": "time",
+      "values": {
+        "avg": 12.700346000000003,
+        "min": 6.0374,
+        "med": 12.51585,
+        "max": 19.7895,
+        "p(90)": 17.762690000000003,
+        "p(95)": 18.7521
+      }
+    },
+    "http_req_blocked": {
+      "type": "trend",
+      "contains": "time",
+      "values": {
+        "min": 0,
+        "med": 0,
+        "max": 4.1627,
+        "p(90)": 0,
+        "p(95)": 0,
+        "avg": 0.19822380952380952
+      }
+    },
+    "http_req_duration": {
+      "type": "trend",
+      "contains": "time",
+      "values": {
+        "avg": 12.46672857142857,
+        "min": 3.6455,
+        "med": 8.5429,
+        "max": 82.9796,
+        "p(90)": 10.8021,
+        "p(95)": 18.3959
+      }
+    },
+    "dicetilt_bet_error_rate": {
+      "type": "rate",
+      "contains": "default",
+      "values": {
+        "rate": 0,
+        "passes": 0,
+        "fails": 27279
+      },
+      "thresholds": {
+        "rate<0.01": {
+          "ok": true
+        }
+      }
+    },
+    "http_req_duration{expected_response:true}": {
+      "type": "trend",
+      "contains": "time",
+      "values": {
+        "avg": 12.46672857142857,
+        "min": 3.6455,
+        "med": 8.5429,
+        "max": 82.9796,
+        "p(90)": 10.8021,
+        "p(95)": 18.3959
+      }
+    },
+    "http_req_receiving": {
+      "contains": "time",
+      "values": {
+        "avg": 0.04938571428571429,
+        "min": 0,
+        "med": 0,
+        "max": 0.5224,
+        "p(90)": 0,
+        "p(95)": 0.5147
+      },
+      "type": "trend"
+    },
+    "ws_sessions": {
+      "type": "counter",
+      "contains": "default",
+      "values": {
+        "count": 50,
+        "rate": 1.104501128384861
+      }
+    },
+    "http_req_connecting": {
+      "type": "trend",
+      "contains": "time",
+      "values": {
+        "p(90)": 0,
+        "p(95)": 0,
+        "avg": 0,
+        "min": 0,
+        "med": 0,
+        "max": 0
+      }
+    },
+    "http_req_waiting": {
+      "type": "trend",
+      "contains": "time",
+      "values": {
+        "avg": 12.417342857142856,
+        "min": 3.6455,
+        "med": 8.5429,
+        "max": 82.9796,
+        "p(90)": 10.8021,
+        "p(95)": 18.3959
+      }
+    },
+    "ws_msgs_sent": {
+      "type": "counter",
+      "contains": "default",
+      "values": {
+        "count": 64917,
+        "rate": 1434.0179950272002
+      }
+    },
+    "dicetilt_bets_total_k6": {
+      "type": "counter",
+      "contains": "default",
+      "values": {
+        "count": 27279,
+        "rate": 602.5937256242124
+      }
+    },
+    "http_req_sending": {
+      "type": "trend",
+      "contains": "time",
+      "values": {
+        "avg": 0,
+        "min": 0,
+        "med": 0,
+        "max": 0,
+        "p(90)": 0,
+        "p(95)": 0
+      }
+    },
+    "http_reqs": {
+      "type": "counter",
+      "contains": "default",
+      "values": {
+        "count": 21,
+        "rate": 0.46389047392164157
+      }
+    },
+    "data_received": {
+      "type": "counter",
+      "contains": "data",
+      "values": {
+        "count": 12883004,
+        "rate": 284585.8490997335
+      }
+    },
+    "vus": {
+      "values": {
+        "value": 50,
+        "min": 50,
+        "max": 50
+      },
+      "type": "gauge",
+      "contains": "default"
+    },
+    "dicetilt_bet_duration_ms": {
+      "type": "trend",
+      "contains": "time",
+      "values": {
+        "p(90)": 3,
+        "p(95)": 4,
+        "avg": 2.602881337292423,
+        "min": 0,
+        "med": 2,
+        "max": 98
+      },
+      "thresholds": {
+        "p(95)<30": {
+          "ok": true
+        }
+      }
+    },
+    "data_sent": {
+      "type": "counter",
+      "contains": "data",
+      "values": {
+        "count": 9946495,
+        "rate": 219718.29901948752
+      }
+    },
+    "ws_msgs_received": {
+      "type": "counter",
+      "contains": "default",
+      "values": {
+        "count": 64915,
+        "rate": 1433.9738149820648
+      }
+    },
+    "http_req_tls_handshaking": {
+      "contains": "time",
+      "values": {
+        "avg": 0,
+        "min": 0,
+        "med": 0,
+        "max": 0,
+        "p(90)": 0,
+        "p(95)": 0
+      },
+      "type": "trend"
+    },
+    "http_req_failed": {
+      "type": "rate",
+      "contains": "default",
+      "values": {
+        "fails": 21,
+        "rate": 0,
+        "passes": 0
+      }
+    },
+    "checks": {
+      "type": "rate",
+      "contains": "default",
+      "values": {
+        "rate": 1,
+        "passes": 1,
+        "fails": 0
+      }
+    }
+  },
+  "setup_data": {
+    "tokens": [
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiI4NWY1ZDM1OS0yNTdmLTRiMTgtOTQ0Ni0yN2M0ZmE4ZDJmNmMiLCJ3YWxsZXRBZGRyZXNzIjoiMHhmMzlGZDZlNTFhYWQ4OEY2RjRjZTZhQjg4MjcyNzljZmZGYjkyMjY2IiwiaWF0IjoxNzcyNTgxNDQ1LCJleHAiOjE3NzI2Njc4NDV9.JK-CH97Ug3o3qyPODs-XTEHaDWRa71ngLfug2qePAjY",
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiI4MzdmNmE2MS05MThjLTQwMGYtOTAwNS1lZjNjZjEwZWNhMzMiLCJ3YWxsZXRBZGRyZXNzIjoiMHg3MDk5Nzk3MEM1MTgxMmRjM0EwMTBDN2QwMWI1MGUwZDE3ZGM3OUM4IiwiaWF0IjoxNzcyNTgxNDQ1LCJleHAiOjE3NzI2Njc4NDV9.tAc_bu6UCF4urq-NyFbmQVN0fJFE988wCHr81j7thi0",
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiJjM2U1NmViOS1jZWQ1LTQ1ZWYtODNkNS1lY2I0ZWZiOTA3YTMiLCJ3YWxsZXRBZGRyZXNzIjoiMHgzQzQ0Q2REZEI2YTkwMGZhMmI1ODVkZDI5OWUwM2QxMkZBNDI5M0JDIiwiaWF0IjoxNzcyNTgxNDQ1LCJleHAiOjE3NzI2Njc4NDV9.yKarFJ8VrDD7ViaqaTAabNDblMjTbuVPYWDWhjT8Giw",
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiI0ZGMzM2Y5MS0xYjU4LTQyODgtYTNiMS02ODU0YmJkM2E5ZDYiLCJ3YWxsZXRBZGRyZXNzIjoiMHg5MEY3OWJmNkVCMmM0Zjg3MDM2NUU3ODU5ODJFMWYxMDFFOTNiOTA2IiwiaWF0IjoxNzcyNTgxNDQ1LCJleHAiOjE3NzI2Njc4NDV9.diQLbWFigHZKWO42qOTLwS0elFE6hiQOWUGFS_199TQ",
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiI5ZjhkOGM3NC03MTY3LTQxMDItOWYwMy0wOGJjMjFiZTdjOGEiLCJ3YWxsZXRBZGRyZXNzIjoiMHgxNWQzNEFBZjU0MjY3REI3RDdjMzY3ODM5QUFmNzFBMDBhMkM2QTY1IiwiaWF0IjoxNzcyNTgxNDQ1LCJleHAiOjE3NzI2Njc4NDV9.V3CJRVOH2GA9Vw0bETzSLas4EzCUC19QnGCFkhDWmqA",
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiI2ZDU2YTAzMy1mNDc4LTQ0NGYtOTYwZi1mMWY5ZWUyZGRmMTMiLCJ3YWxsZXRBZGRyZXNzIjoiMHg5OTY1NTA3RDFhNTViY0MyNjk1QzU4YmExNkZCMzdkODE5QjBBNGRjIiwiaWF0IjoxNzcyNTgxNDQ1LCJleHAiOjE3NzI2Njc4NDV9.KscrD0aOdXIZX60dRZv6n--8-RSiR-9evEPn8ZYyR5k",
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiIwMGIxNWFmMi1mYTYzLTQ0OWUtOWIyOC0zMDBiOWExOWJiMzgiLCJ3YWxsZXRBZGRyZXNzIjoiMHg5NzZFQTc0MDI2RTcyNjU1NGRCNjU3ZkE1NDc2M2FiZDBDM2EwYWE5IiwiaWF0IjoxNzcyNTgxNDQ1LCJleHAiOjE3NzI2Njc4NDV9._2JVq5w-lRHmqv7uNUleyYIgdGE7GZQyD6gqVg6aUgQ",
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiJhYjVlMTVkMy00MzU3LTRiZDQtOTQ1OS00NzhmMjg0ODY1MDQiLCJ3YWxsZXRBZGRyZXNzIjoiMHgxNGRDNzk5NjRkYTJDMDhiMjM2OThCM0QzY2M3Q2EzMjE5M2Q5OTU1IiwiaWF0IjoxNzcyNTgxNDQ1LCJleHAiOjE3NzI2Njc4NDV9.chQyhEXshAOQuR5WRxN3yu8EbLJ8V6VhJrYDa-x5shM",
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiI3OTRmMDk3ZC1lODY0LTRmNTItYTJmOS00MmE2ODc4ZjAwOWEiLCJ3YWxsZXRBZGRyZXNzIjoiMHgyMzYxOGU4MUUzZjVjZEY3ZjU0QzNkNjVmN0ZCYzBhQmY1QjIxRThmIiwiaWF0IjoxNzcyNTgxNDQ1LCJleHAiOjE3NzI2Njc4NDV9.50BZxVO2vsTS68nlCTIi5ZsLIhfrrH7uPE7dc_I5KeI",
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiI3MzA4OTA5MC0zMjBiLTQxMWUtYWUzZS0zZjZjMGM0ZjhmMzciLCJ3YWxsZXRBZGRyZXNzIjoiMHhhMEVlN0ExNDJkMjY3QzFmMzY3MTRFNGE4Rjc1NjEyRjIwYTc5NzIwIiwiaWF0IjoxNzcyNTgxNDQ1LCJleHAiOjE3NzI2Njc4NDV9.Oxu9OSwbjmOZwV9hcALIn-OxigQo07lWlurbUKsLHwQ",
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiI1ZjU4OGQwNi05NmZlLTQzZWMtYTJlNy1iMzk1YTQ5NmIyZGEiLCJ3YWxsZXRBZGRyZXNzIjoiMHhCY2Q0MDQyREU0OTlEMTRlNTUwMDFDY2JCMjRhNTUxRjNiOTU0MDk2IiwiaWF0IjoxNzcyNTgxNDQ1LCJleHAiOjE3NzI2Njc4NDV9.Xh3QVPC_mXmc__UXY28MpqY358NEB8fQYQelhX3A5OA",
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiI2MDI5MWYwMS04ZmI1LTQxZDktOTY5NS01ZGRmODRhNjcxNmEiLCJ3YWxsZXRBZGRyZXNzIjoiMHg3MWJFNjNmMzM4NGY1ZmI5ODk5NTg5OEE4NkIwMkZiMjQyNmM1Nzg4IiwiaWF0IjoxNzcyNTgxNDQ1LCJleHAiOjE3NzI2Njc4NDV9.2gyVUQ9ZXG1MGHhgQ6_o-ogTW93lXpSDwTOPb1TvQJo",
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiJlMTgxODJkMy01ZTRhLTRhNzktOTJjYi01Mzg1NTAxNjIyODMiLCJ3YWxsZXRBZGRyZXNzIjoiMHhGQUJCMGFjOWQ2OEIwQjQ0NWZCNzM1NzI3MkZmMjAyQzU2NTE2OTRhIiwiaWF0IjoxNzcyNTgxNDQ1LCJleHAiOjE3NzI2Njc4NDV9.wflkX4rIW6WZCDn9rOhBpCjzz7yyO5KEVThzqIbSB7k",
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiJjMjhhNDg3Zi1iODk3LTQyZGYtYTlmMS1iMWEzMjI1M2JiYjUiLCJ3YWxsZXRBZGRyZXNzIjoiMHgxQ0JkM2IyNzcwOTA5RDRlMTBmMTU3Y0FCQzg0QzcyNjQwNzNDOUVjIiwiaWF0IjoxNzcyNTgxNDQ1LCJleHAiOjE3NzI2Njc4NDV9.wHrzNB45KHOUpZl4n1YpoWu_u6-BFACtfUSzbUN7G0E",
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiIzNWQ1ZGU0Mi0xNGFhLTQyODUtOWRkZC1kMDNjMjllZTU4YjkiLCJ3YWxsZXRBZGRyZXNzIjoiMHhkRjNlMThkNjRCQzZBOTgzZjY3M0FiMzE5Q0NhRTRmMWE1N0M3MDk3IiwiaWF0IjoxNzcyNTgxNDQ1LCJleHAiOjE3NzI2Njc4NDV9.rx6zt5FcS92QhXXyeAToPdlvoZ5eOz5pY81L27q8gwU",
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiJlN2U3MDY5Zi1mZDY5LTQwMDctYTVhMy05ZDg3OTQ1N2VkNjgiLCJ3YWxsZXRBZGRyZXNzIjoiMHhjZDNCNzY2Q0NEZDZBRTcyMTE0MUY0NTJDNTUwQ2E2MzU5NjRjZTcxIiwiaWF0IjoxNzcyNTgxNDQ1LCJleHAiOjE3NzI2Njc4NDV9.2-5Dv7J8Zbsp7homzAO_rG3PzA5_R7owjAv5j0aSF3o",
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiJmMjNkM2MxOC0wOGViLTQ2M2YtODQ0ZC0yMTM2MWIwZWY0OWQiLCJ3YWxsZXRBZGRyZXNzIjoiMHgyNTQ2QmNEM2M4NDYyMWU5NzZEODE4NWE5MUE5MjJhRTc3RUNFYzMwIiwiaWF0IjoxNzcyNTgxNDQ1LCJleHAiOjE3NzI2Njc4NDV9.OXVmqbyidGKt-kpq_t1s5ftvJb947excl0kWSdgd4E4",
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiI5ZTA2M2MxMy0zM2YyLTRiYzktYTc0ZC01YTRhYmQ3YzlkYTIiLCJ3YWxsZXRBZGRyZXNzIjoiMHhiREE1NzQ3YkZENjVGMDhkZWI1NGNiNDY1ZUI4N0Q0MGU1MUIxOTdFIiwiaWF0IjoxNzcyNTgxNDQ1LCJleHAiOjE3NzI2Njc4NDV9._J5zzvRp_DUKgBYy_ixMe6DNfri2l0X4QN5zEdVKpi8",
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiI0YWI2MDMzOC00NzIwLTQxZjgtOTA5MS02ODZmZWI3NWQ4OWEiLCJ3YWxsZXRBZGRyZXNzIjoiMHhkRDJGRDQ1ODEyNzFlMjMwMzYwMjMwRjkzMzdENWMwNDMwQmY0NEMwIiwiaWF0IjoxNzcyNTgxNDQ1LCJleHAiOjE3NzI2Njc4NDV9.OykB7lIfttyF31c1I5Qvmto-3xqmQALtO4Vr-zp7ziE",
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiJmMjdkMTQwYi01ZTczLTQ0MWMtYTAxNi1jNWJlYmRiMDRiYjYiLCJ3YWxsZXRBZGRyZXNzIjoiMHg4NjI2ZjY5NDBFMmViMjg5MzBlRmI0Q2VGNDlCMmQxRjJDOUMxMTk5IiwiaWF0IjoxNzcyNTgxNDQ1LCJleHAiOjE3NzI2Njc4NDV9.MKtbJD3jOVVbFK4zdJv_JKq_N4OfWqbA86wmK5O0pJE"
+    ]
+  }
+}

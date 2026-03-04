@@ -38,7 +38,7 @@ sequenceDiagram
     participant Redis as Redis
     participant API as API Gateway
 
-    Note over B: deploy script pre-funded burnerWallet with test ETH
+    Note over B: evm-deploy script pre-funded Treasury with 100 ETH; burnerWallet funded by Anvil
 
     B->>Anvil: eth_sendTransaction → Treasury.deposit(amount) signed by burnerWallet
     Anvil->>TSol: execute deposit() — transfer ETH to contract
@@ -47,21 +47,37 @@ sequenceDiagram
 
     Note over EL: Continuously listening via ethers.js contract.on('Deposit', ...)
     EL->>EL: receive Deposit event { player: "0x...", amount: "1000000000000000000", block: 42 }
+    Note over EL: ethers.js v6 — txHash is nested on eventLog.log.transactionHash (NOT top-level)
+
+    Note over EL: Layer 1 dedup — in-memory seenTxHashes Set
+    EL->>EL: if seenTxHashes.has(txHash) → drop duplicate (ethers.js can re-fire on WS reconnect)
+    Note over EL: Layer 2 dedup — DB check (survives listener restart; Anvil replays all historical events on each new WS subscription)
+    EL->>PG: SELECT deposit_id FROM deposits WHERE tx_hash = '0xabc...'
+    PG-->>EL: (0 rows) — not seen before
+    EL->>EL: seenTxHashes.add(txHash)
+
     EL->>EL: derive userId from wallet_address lookup
     EL->>Kafka: produce DepositReceived { chain: "ethereum", currency: "ETH", userId, amount: "1.0", txHash, blockNumber }
     Note over EL: acks: 'all' — waits for all Kafka replicas to acknowledge
 
     LC->>Kafka: consume DepositReceived (chain: "ethereum")
-    LC->>PG: INSERT INTO wallets (user_id, chain='ethereum', currency='ETH') ON CONFLICT (user_id,chain,currency) DO UPDATE SET balance = balance + 1.0
-    PG-->>LC: updated balance: "101.00000000"
-    LC->>Redis: SET user:{userId}:balance:ethereum:ETH "101.00000000"
-    LC->>Redis: PUBLISH user:updates:{userId} { type: "balance_update", chain: "ethereum", currency: "ETH", balance: 101.0 }
+    LC->>PG: INSERT INTO deposits (deposit_id, tx_hash, ...) ON CONFLICT (tx_hash) DO NOTHING
+    LC->>PG: INSERT INTO wallets ON CONFLICT (user_id,chain,currency) DO UPDATE SET balance = balance + 1.0
+    PG-->>LC: updated balance: "11.00000000"
+    Note over LC: DEPOSIT_CREDIT_LUA — INCRBYFLOAT if Redis key exists (preserves bet P&L), SET {pgBalance} if absent (Redis restart recovery)
+    LC->>Redis: EVAL DEPOSIT_CREDIT_LUA(balanceKey, depositAmount="1.0", pgBalance="11.0")
+    Redis-->>LC: "11.00000000" (INCRBYFLOAT: existing 10.0 + 1.0)
+    LC->>Redis: PUBLISH user:updates:{userId} { type: "balance_update", chain: "ethereum", currency: "ETH", balance: 11.0 }
     LC->>Kafka: commit offset
 
     Note over API: API Gateway SUBSCRIBEd to user:updates:{userId} — receives Pub/Sub message
-    API->>B: WS push → { type: "BALANCE_UPDATE", balance: 101.0, chain: "ethereum", currency: "ETH" }
+    API->>B: WS push → { type: "BALANCE_UPDATE", balance: 11.0, chain: "ethereum", currency: "ETH" }
     Note over B: Balance updates in real-time without page refresh
 ```
+
+> **Two-layer deduplication rationale:** Anvil replays all historical `Deposit` events every time the EVM Listener opens a new WebSocket subscription (i.e., on every listener restart or reconnect). Without the DB-level dedup check against `deposits.tx_hash`, each restart would re-credit every deposit in history. Layer 1 (in-memory Set) is fast but ephemeral; Layer 2 (DB query) is persistent across restarts.
+>
+> **DEPOSIT_CREDIT_LUA rationale:** A plain Redis `SET` would overwrite the balance with the Postgres wallet value, which does not include bet P&L (only deposits and withdrawals are persisted there). `INCRBYFLOAT` adds the deposit amount on top of the existing Redis balance, correctly composing it with accumulated bet wins and losses.
 
 ---
 
@@ -175,25 +191,54 @@ sequenceDiagram
 
     Note over EPW: Consuming WithdrawalRequested — filters on chain === "ethereum"
     EPW->>Kafka: consume WithdrawalRequested (chain: "ethereum")
+
+    Note over EPW: In-session idempotency check — skip Kafka at-least-once redeliveries
+    EPW->>EPW: if completedThisRun.has(withdrawal_id) → skip (already paid this session)
+
+    Note over EPW: Acquire payoutBusy mutex (spin-wait)
+    Note over EPW: KafkaJS eachMessage can run handlers for different partitions concurrently.
+    Note over EPW: The mutex ensures only one payout tx is in-flight at a time so the wallet nonce is consumed strictly in sequence.
+    EPW->>EPW: while (payoutBusy) { await sleep(50ms) }
+    EPW->>EPW: payoutBusy = true
+
     EPW->>EPW: read TREASURY_OWNER_PRIVATE_KEY from env (PoC: deterministic Hardhat key from .env; production: Ansible Vault)
     EPW->>EPW: ethers.Wallet(privateKey, provider) → treasuryWallet
-    EPW->>Anvil: treasuryContract.payout(toAddress, amount) — signed tx
-    Anvil->>TSol: execute payout() — transfer ETH from contract to recipient
-    TSol-->>Anvil: emit Payout(recipient, amount)
-    Anvil-->>EPW: tx receipt { status: 1, txHash: "0xdef..." }
+
+    loop sendPayout — up to 20 retries on NONCE_EXPIRED
+        EPW->>Anvil: treasuryContract.payout(toAddress, amount) — signed tx
+        alt NONCE_EXPIRED (ghost tx from old race-condition session occupies nonce)
+            Anvil-->>EPW: error { code: "NONCE_EXPIRED" }
+            Note over EPW: ethers auto-queries fresh nonce from eth_getTransactionCount on next attempt
+        else Success
+            Anvil->>TSol: execute payout() — transfer ETH from contract to recipient
+            Anvil-->>EPW: tx receipt { status: 1, txHash: "0xdef..." }
+        end
+    end
+
+    EPW->>EPW: payoutBusy = false (mutex released in finally block)
+    EPW->>EPW: completedThisRun.add(withdrawal_id)
 
     EPW->>Kafka: produce WithdrawalCompleted { withdrawalId, userId, chain, amount, txHash, completedAt }
     EPW->>Kafka: commit offset
 
     Note over LC: Ledger Consumer consumes WithdrawalCompleted
-    LC->>LC: record withdrawal (optional DB insert for audit)
-    LC->>Redis: PUBLISH user:updates:{userId} { type: "withdrawal_completed", withdrawalId, txHash, chain, currency }
-    Note over API: API Gateway receives Pub/Sub → pushes WITHDRAWAL_COMPLETED to WebSocket
-    API->>B: WS push → { type: "WITHDRAWAL_COMPLETED", withdrawalId, txHash, chain, currency }
-    Note over B: UI no longer shows "PENDING"
+    LC->>PG: INSERT INTO withdrawals (withdrawal_id, ...) ON CONFLICT DO NOTHING
+    LC->>PG: UPDATE wallets SET balance = balance - amount (via CTE join — skipped if withdrawal already recorded)
+    Note over LC: Publish both events (Redis Pub/Sub does NOT guarantee ordering between messages)
+    LC->>Redis: PUBLISH user:updates:{userId} { type: "BALANCE_UPDATE", chain, currency, balance }
+    LC->>Redis: PUBLISH user:updates:{userId} { type: "WITHDRAWAL_COMPLETED", withdrawalId, txHash, chain, currency, amount }
+    Note over API: API Gateway receives Pub/Sub messages → forwards each to WebSocket (order not guaranteed)
+    API->>B: WS push → { type: "BALANCE_UPDATE" | "WITHDRAWAL_COMPLETED" } (either order)
+    Note over B: Clients MUST reconcile on WITHDRAWAL_COMPLETED: fetch latest balance via REST (e.g. fetchBalances) to ensure correct UI state regardless of message order
 
     Note over EPW: dicetilt_withdrawal_completions_total{chain="ethereum"} incremented
 ```
+
+> **`payoutBusy` mutex rationale:** `partitionsConsumedConcurrently: 1` serialises `eachBatch` mode but **not** `eachMessage` — different Kafka partitions can still execute their `eachMessage` handlers concurrently. Without the mutex, two handlers racing to call `contract.payout()` simultaneously would submit two transactions with the same nonce, causing one to fail. The mutex collapses all concurrent handlers into a strict serial queue.
+>
+> **NONCE_EXPIRED retry rationale:** After the mutex was introduced, a new failure mode appeared: ghost transactions from the pre-mutex era (when races were common) had already consumed certain nonces on-chain. Ethers re-uses those nonce slots, but Anvil rejects them as `NONCE_EXPIRED`. Each retry lets ethers query `eth_getTransactionCount` for a fresh nonce, effectively skipping the ghost slot. Up to 20 retries handles any reasonable backlog of ghost nonces.
+>
+> **Redis Pub/Sub ordering:** Redis Pub/Sub does not guarantee ordering between messages on the same channel. The Ledger Consumer publishes both `BALANCE_UPDATE` and `WITHDRAWAL_COMPLETED`; clients may receive them in either order. Clients **must** reconcile on `WITHDRAWAL_COMPLETED` by fetching the latest balance via REST (e.g. `fetchBalances()`). The frontend already does this, so the UI remains correct regardless of message order.
 
 ---
 

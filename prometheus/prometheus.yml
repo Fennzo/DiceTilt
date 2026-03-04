@@ -2,10 +2,13 @@ global:
   scrape_interval: 5s
   evaluation_interval: 5s
 
+rule_files:
+  - alerts.yml
+
 scrape_configs:
   - job_name: 'api-gateway'
     static_configs:
-      - targets: ['api-gateway:3000']
+      - targets: ['api-gateway:9091']
     metrics_path: /metrics
 
   - job_name: 'pf-worker'

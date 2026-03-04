@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "build": "pnpm -r run build",
+    "build:frontend": "node scripts/build-frontend.js",
     "lint": "eslint . --ext .ts",
     "format": "prettier --write \"**/*.{ts,json,md}\"",
     "format:check": "prettier --check \"**/*.{ts,json,md}\"",

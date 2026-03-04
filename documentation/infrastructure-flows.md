@@ -35,6 +35,7 @@ flowchart TD
     PF["PF Worker"]
     API["API Gateway"]
     Ledger["Ledger Consumer"]
+    EVMDeploy["evm-deploy\ndeploy Treasury.sol + fund 100 ETH\noutputs TREASURY_CONTRACT_ADDRESS"]
     EVMListen["EVM Listener"]
     SolListen["Solana Listener"]
     EVMPay["EVM Payout Worker"]
@@ -46,7 +47,9 @@ flowchart TD
 
     PG --> API
     PG --> Ledger
+    PG --> EVMListen
     Redis --> API
+    Redis --> Ledger
     Kafka --> KafkaInit
     KafkaInit --> API
     KafkaInit --> Ledger
@@ -54,16 +57,25 @@ flowchart TD
     KafkaInit --> SolListen
     KafkaInit --> EVMPay
     KafkaInit --> SolPay
+    Anvil --> EVMDeploy
+    EVMDeploy --> EVMListen
+    EVMDeploy --> EVMPay
     Anvil --> EVMListen
     Anvil --> EVMPay
     SolVal --> SolListen
     SolVal --> SolPay
+    PF --> API
     API --> Nginx
-    PF --> Nginx
+    API --> Prom
+    PF --> Prom
     Prom --> Grafana
 ```
 
 > **Critical constraint (Constraint 15):** TypeScript services connect to Redis, Postgres, and Kafka on boot. If these are not ready, the connection attempt throws and the process exits. `condition: service_healthy` prevents this race condition entirely.
+>
+> **`evm-deploy` service:** The `evm-deploy` service is the container built from `docker/evm-deploy.Dockerfile`; the Anvil node is exposed as the Docker Compose service named `evm-node`. The `evm-deploy.sh` entrypoint wraps the Hardhat deployment: it runs `hardhat run scripts/deploy.js`, captures the deployed address from stdout with `tail -1`, and writes it to the shared Docker volume `treasury-addr`. The deploy script deploys `Treasury.sol`, immediately funds it with 100 ETH from the Hardhat deployer account (account #0, pre-funded by Anvil), and outputs the contract address as the **last stdout line**. The EVM Listener and EVM Payout Worker mount `treasury-addr` read-only — this is how `TREASURY_CONTRACT_ADDRESS` is propagated without hardcoding. On chain reset (Docker restart), the deploy + fund runs automatically. If the chain was not reset, the script exits early and does not re-fund.
+>
+> **Network namespace sharing:** `evm-deploy` uses `network_mode: "service:evm-node"`, sharing the Anvil container's network namespace. This means the deploy script connects to `http://127.0.0.1:8545` (loopback) rather than the Docker DNS name `evm-node`. This avoids network configuration complexity for a one-shot container and ensures zero-latency access to Anvil.
 
 ---
 
@@ -76,7 +88,8 @@ sequenceDiagram
     participant Redis as Redis
     participant Kafka as Kafka (KRaft)
     participant KI as init-kafka.sh
-    participant Anvil as Hardhat/Anvil
+    participant Anvil as evm-node (Anvil)
+    participant EVMDeploy as evm-deploy
     participant SolVal as Solana Validator
     participant API as API Gateway
     participant PF as PF Worker
@@ -105,23 +118,31 @@ sequenceDiagram
     Kafka-->>KI: topics created
     DC-->>KI: exit 0 (init container completes)
 
-    DC->>Anvil: start Hardhat/Anvil — deploy Treasury.sol on boot
+    DC->>Anvil: start evm-node (Anvil, pre-funded accounts)
     Anvil-->>DC: healthcheck: eth_blockNumber → block 1
+
+    DC->>EVMDeploy: start evm-deploy (depends_on: evm-node healthy)
+    EVMDeploy->>Anvil: hardhat run scripts/deploy.js — deploy Treasury.sol
+    Anvil-->>EVMDeploy: contract deployed at 0x5FbDB...
+    EVMDeploy->>Anvil: deployer.sendTransaction({ to: treasury, value: 100 ETH })
+    Anvil-->>EVMDeploy: fund tx confirmed
+    EVMDeploy->>DC: stdout last line = "0x5FbDB..." (parsed by evm-deploy.sh via tail -1)
+    Note over EVMDeploy: TREASURY_CONTRACT_ADDRESS env var written; container exits 0
 
     DC->>SolVal: start solana-test-validator (multi-stage: Rust compile → validator boot)
     SolVal->>SolVal: deploy Anchor Treasury program --bpf-program
     SolVal-->>DC: healthcheck: getHealth → "ok"
 
-    DC->>PF: start PF Worker (depends_on: none — stateless)
-    DC->>API: start API Gateway (depends_on: PG healthy, Redis healthy, Kafka init complete)
-    DC->>Ledger: start Ledger Consumer (depends_on: PG healthy, Kafka init complete)
-    DC->>EL: start EVM Listener (depends_on: Anvil healthy, Kafka init complete)
+    DC->>PF: start PF Worker (depends_on: none — stateless, no external connections)
+    DC->>API: start API Gateway (depends_on: PG healthy, Redis healthy, Kafka init complete, PF healthy)
+    DC->>Ledger: start Ledger Consumer (depends_on: PG healthy, Redis healthy, Kafka init complete)
+    DC->>EL: start EVM Listener (depends_on: evm-deploy complete, Anvil healthy, PG healthy, Kafka init complete)
     DC->>SL: start Solana Listener (depends_on: SolVal healthy, Kafka init complete)
-    DC->>EPW: start EVM Payout Worker (depends_on: Anvil healthy, Kafka init complete)
+    DC->>EPW: start EVM Payout Worker (depends_on: evm-deploy complete, Anvil healthy, Kafka init complete)
     DC->>SPW: start Solana Payout Worker (depends_on: SolVal healthy, Kafka init complete)
 
-    DC->>Nginx: start Nginx (depends_on: API healthy, PF healthy)
-    DC->>Prom: start Prometheus
+    DC->>Nginx: start Nginx (depends_on: API healthy)
+    DC->>Prom: start Prometheus (depends_on: API healthy, PF healthy)
     DC->>Grafana: start Grafana (depends_on: Prom healthy)
 
     Note over Nginx, Grafana: System fully ready — recruiter opens localhost:80
@@ -135,15 +156,23 @@ sequenceDiagram
 |---|---|---|---|---|---|
 | PostgreSQL | `pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}` | 5s | 5s | 5 | 10s |
 | Redis | `redis-cli ping` | 5s | 3s | 5 | 5s |
-| Kafka | `kafka-topics.sh --bootstrap-server localhost:9092 --list` | 10s | 10s | 10 | 30s |
-| Hardhat/Anvil | `curl -sf -X POST -d '{"method":"eth_blockNumber","params":[],"id":1,"jsonrpc":"2.0"}' http://localhost:8545` | 5s | 5s | 5 | 15s |
+| Kafka | `kafka-topics.sh --bootstrap-server localhost:29092 --list` | 10s | 10s | 10 | 30s |
+| Hardhat/Anvil | `cast block-number --rpc-url http://localhost:8545` | 5s | 5s | 10 | 10s |
 | Solana Validator | `curl -sf -X POST -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' http://localhost:8899` | 5s | 5s | 10 | 60s |
-| API Gateway | `curl -sf http://localhost:3000/health` | 10s | 5s | 3 | 15s |
-| PF Worker | `curl -sf http://localhost:3001/health` | 10s | 5s | 3 | 10s |
-| Nginx | `curl -sf http://localhost:80/health` | 10s | 5s | 3 | 15s |
-| Prometheus | `curl -sf http://localhost:9090/-/healthy` | 10s | 5s | 3 | 10s |
+| API Gateway | `wget -qO- http://localhost:3000/health` | 10s | 5s | 3 | 15s |
+| PF Worker | `wget -qO- http://localhost:3001/health` | 10s | 5s | 3 | 10s |
+| EVM Listener | `wget -qO- http://localhost:3010/health` | 10s | 5s | 3 | 15s |
+| EVM Payout Worker | `wget -qO- http://localhost:3020/health` | 10s | 5s | 3 | 10s |
+| Ledger Consumer | `wget -qO- http://localhost:3030/health` | 10s | 5s | 3 | 15s |
+| Nginx | `curl -sf http://localhost:80/health` | 10s | 5s | 3 | 5s |
+| Prometheus | `wget -qO- http://localhost:9090/-/healthy` | 10s | 5s | 3 | 10s |
+| Grafana | `wget -qO- http://localhost:3000/api/health` | 10s | 5s | 5 | 15s |
 
 > **Start Period:** Docker does not count health check failures during the start period. This allows services with slow initialisation (Kafka formatting, Solana compilation) to fully boot before failing the health check and triggering a container restart.
+>
+> **Note on Kafka port:** The internal Kafka listener is `29092` (not the standard `9092`). The `9093` port is used for the internal KRaft controller — it is never addressed by application services.
+>
+> **Note on Anvil health check:** Uses the Foundry `cast` CLI (`cast block-number`) rather than a raw `curl` JSON-RPC call. `cast` is available inside the `ghcr.io/foundry-rs/foundry` container image used for the EVM node.
 
 ---
 
@@ -209,7 +238,7 @@ sequenceDiagram
     Note over Prom: Every 15s scrape interval (configurable in prometheus.yml)
 
     par Scrape TypeScript services
-        Prom->>API: GET /metrics
+        Prom->>API: GET :9091/metrics (cluster primary — aggregates all worker metrics via prom-client AggregatorRegistry)
         API-->>Prom: dicetilt_bets_total, dicetilt_bet_processing_duration_ms, dicetilt_active_websocket_connections, dicetilt_double_spend_rejections_total, ...
     and
         Prom->>PF: GET /metrics

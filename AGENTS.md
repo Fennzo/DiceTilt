@@ -9,7 +9,7 @@ Read `CLAUDE.md` and `documentation/` before coding. These rules extend them.
 - **No destructive ops** (`reset --hard`, `clean`, `restore`, `rm`) without explicit consent.
 - **Prefer small, reviewable commits.** No repo-wide search/replace scripts.
 - **Branch changes require user consent.**
-- **Commit helper:** Use `.\scripts\committer.ps1 "message" path1 path2` for explicit staging.
+- **Commit helper:** Use `./scripts/committer.ps1 "message" path1 path2` (Windows PowerShell) or `pwsh ./scripts/committer.ps1 "message" path1 path2` (Unix — PowerShell Core). The legacy `powershell` binary is not available on Unix; use `pwsh` instead.
 
 ## Build & Test
 

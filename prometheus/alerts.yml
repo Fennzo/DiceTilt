@@ -1,0 +1,16 @@
+# DiceTilt Prometheus alerting rules
+# Loaded by prometheus.yml via rule_files.
+
+groups:
+  - name: dicetilt
+    rules:
+      # Redis unavailability: bets rejected due to fail-closed behavior.
+      # Any increment indicates Redis was unavailable for rate limit or escrow checks.
+      - alert: RedisUnavailableBetRejections
+        expr: rate(dicetilt_redis_error_rejections_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis unavailable — bets being rejected (fail closed)"
+          description: "API Gateway is rejecting bets due to Redis unavailability. Check Redis connectivity and health."

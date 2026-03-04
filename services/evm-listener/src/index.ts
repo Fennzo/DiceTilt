@@ -5,6 +5,9 @@ import { config } from './config.js';
 import { getUserIdByWalletAddress, isTxHashAlreadyDeposited } from './db.js';
 import { KAFKA_TOPICS, type DepositReceivedEvent } from '@dicetilt/shared-types';
 import { register, collectDefaultMetrics, Counter } from 'prom-client';
+import { createLoggers } from '@dicetilt/logger';
+
+const { app: log, audit } = createLoggers('evm-listener');
 
 collectDefaultMetrics();
 const reconnectionsTotal = new Counter({
@@ -24,7 +27,7 @@ const TREASURY_ABI = [
 
 async function runListener() {
   if (!config.treasuryAddress) {
-    console.error('[EVM Listener] TREASURY_CONTRACT_ADDRESS not set');
+    log.error('TREASURY_CONTRACT_ADDRESS not set', { event: 'STARTUP_FAILED', error: 'CONFIG_MISSING' });
     process.exit(1);
   }
 
@@ -35,34 +38,98 @@ async function runListener() {
   const producer = kafka.producer({ idempotent: true });
   await producer.connect();
 
-  // Deduplication: ethers.js v6 can fire the same event multiple times per tx
-  // (e.g. on WS reconnect or internal re-subscription). Track seen tx_hash values
-  // so each on-chain deposit is only published to Kafka once.
+  // Deduplication: in-memory Set bounded at MAX_DEDUP_CACHE entries.
+  // Layer 2 (DB check) handles cross-restart dedup if an entry is evicted.
+  const MAX_DEDUP_CACHE = config.dedupCacheSize;
   const seenTxHashes = new Set<string>();
 
-  let provider: ethers.WebSocketProvider | ethers.JsonRpcProvider | null = null;
+  function trackTxHash(txHash: string): void {
+    if (seenTxHashes.size >= MAX_DEDUP_CACHE) {
+      const oldest = seenTxHashes.values().next().value as string;
+      seenTxHashes.delete(oldest);
+    }
+    seenTxHashes.add(txHash);
+  }
+
+  // Extracted helper so live listener and historical scan share identical processing.
+  async function processDeposit(
+    txHash: string,
+    player: string,
+    amount: bigint,
+    blockNumber: number,
+  ): Promise<void> {
+    // Layer 1: in-memory dedup (fast, same session)
+    if (txHash && seenTxHashes.has(txHash)) {
+      log.debug('Duplicate deposit ignored (memory)', { event: 'DEPOSIT_DUPLICATE_MEMORY', txHash });
+      return;
+    }
+    // Layer 2: DB dedup (cross-restart protection)
+    if (txHash && await isTxHashAlreadyDeposited(txHash)) {
+      log.debug('Duplicate deposit ignored (db)', { event: 'DEPOSIT_DUPLICATE_DB', txHash });
+      trackTxHash(txHash);
+      return;
+    }
+    const userId = await getUserIdByWalletAddress(player, 'ethereum');
+    if (!userId) {
+      log.warn('No user for wallet address', { event: 'DEPOSIT_NO_USER', walletAddress: player, txHash });
+      return;
+    }
+
+    const amountStr = ethers.formatEther(amount);
+    const depositId = uuidv4();
+    const event: DepositReceivedEvent = {
+      deposit_id: depositId,
+      user_id: userId,
+      chain: 'ethereum',
+      currency: 'ETH',
+      amount: amountStr,
+      wallet_address: player,
+      tx_hash: txHash,
+      block_number: blockNumber,
+      deposited_at: new Date().toISOString(),
+    };
+
+    await producer.send({
+      topic: KAFKA_TOPICS.DEPOSIT_RECEIVED,
+      acks: -1,
+      messages: [{ key: userId, value: JSON.stringify(event) }],
+    });
+
+    if (txHash) trackTxHash(txHash);
+
+    depositsTotal.inc({ chain: 'ethereum' });
+    audit.info('Deposit detected', {
+      event: 'DEPOSIT_DETECTED',
+      depositId,
+      userId,
+      walletAddress: player,
+      amount: amountStr,
+      txHash,
+      blockNumber,
+      chain: 'ethereum',
+      currency: 'ETH',
+    });
+  }
+
+  let provider: ethers.JsonRpcProvider | null = null;
   let attempt = 0;
 
-  async function connect(): Promise<ethers.WebSocketProvider | ethers.JsonRpcProvider> {
-    const url = config.evmRpcWsUrl.startsWith('ws')
-      ? config.evmRpcWsUrl
-      : config.evmRpcUrl.replace(/^http/, 'ws');
-    try {
-      const p = new ethers.WebSocketProvider(url);
-      await p.getBlockNumber();
-      return p;
-    } catch {
-      const p = new ethers.JsonRpcProvider(config.evmRpcUrl);
-      await p.getBlockNumber();
-      return p;
-    }
+  async function connect(): Promise<ethers.JsonRpcProvider> {
+    // HTTP polling is used instead of WebSocket to avoid silent WS disconnections
+    // (WebSocket connections to Anvil can die without emitting an error event after
+    // several hours, causing the listener to silently miss all subsequent events).
+    // JsonRpcProvider polls eth_getLogs every pollingIntervalMs — fully reliable.
+    const p = new ethers.JsonRpcProvider(config.evmRpcUrl);
+    p.pollingInterval = config.pollingIntervalMs;
+    await p.getBlockNumber();
+    return p;
   }
 
   async function listen() {
     try {
       provider = await connect();
       attempt = 0;
-      console.log('[EVM Listener] Connected to', config.evmRpcUrl);
+      log.info('Connected to EVM node', { event: 'EVM_CONNECTED', contractAddress: config.treasuryAddress });
 
       const contract = new ethers.Contract(
         config.treasuryAddress,
@@ -70,60 +137,53 @@ async function runListener() {
         provider,
       );
 
-      contract.on('Deposit', async (player: string, amount: bigint, _timestamp: bigint, eventLog: unknown) => {
+      // Historical scan: catches any Deposit events missed while the listener was down.
+      // Runs once per connect(); dedup (in-memory Set + DB ON CONFLICT) prevents double-crediting.
+      let scanHead = await provider.getBlockNumber();
+      try {
+        const pastEvents = await contract.queryFilter(contract.filters.Deposit(), 0, scanHead) as ethers.EventLog[];
+        log.info('Historical scan complete', { event: 'HISTORICAL_SCAN', count: pastEvents.length });
+        for (const ev of pastEvents) {
           try {
-            // In ethers.js v6 the last callback arg is an EventLog object.
-            // transactionHash and blockNumber are on its nested .log sub-property,
-            // NOT at the top level (confirmed via runtime probe of the object keys).
-            const evLog = eventLog as { log?: { transactionHash?: string; blockNumber?: number } };
-            const txHash = evLog?.log?.transactionHash ?? '';
-
-            // Layer 1: in-memory Set (fast, same session)
-            if (txHash && seenTxHashes.has(txHash)) {
-              console.log('[EVM Listener] Duplicate deposit ignored (memory)', txHash);
-              return;
-            }
-            // Layer 2: DB check (cross-restart protection — Anvil replays historical
-            // Deposit events on every new WS subscription)
-            if (txHash && await isTxHashAlreadyDeposited(txHash)) {
-              console.log('[EVM Listener] Duplicate deposit ignored (db)', txHash);
-              seenTxHashes.add(txHash); // warm the cache
-              return;
-            }
-            if (txHash) seenTxHashes.add(txHash);
-
-            const userId = await getUserIdByWalletAddress(player, 'ethereum');
-            if (!userId) {
-              console.warn('[EVM Listener] No user for wallet', player);
-              return;
-            }
-
-            const amountStr = ethers.formatEther(amount);
-            const event: DepositReceivedEvent = {
-              deposit_id: uuidv4(),
-              user_id: userId,
-              chain: 'ethereum',
-              currency: 'ETH',
-              amount: amountStr,
-              wallet_address: player,
-              tx_hash: txHash,
-              block_number: evLog?.log?.blockNumber ?? 0,
-              deposited_at: new Date().toISOString(),
-            };
-
-            await producer.send({
-              topic: KAFKA_TOPICS.DEPOSIT_RECEIVED,
-              acks: -1,
-              messages: [{ key: userId, value: JSON.stringify(event) }],
-            });
-
-            depositsTotal.inc({ chain: 'ethereum' });
-            console.log('[EVM Listener] DepositReceived', userId, amountStr, 'ETH');
-          } catch (err) {
-            console.error('[EVM Listener] Deposit handler error:', err);
+            await processDeposit(ev.transactionHash, ev.args[0] as string, ev.args[1] as bigint, ev.blockNumber);
+          } catch (evErr) {
+            log.error('Historical deposit error', { event: 'DEPOSIT_HANDLER_ERROR', txHash: ev.transactionHash, error: String(evErr) });
           }
-        },
-      );
+        }
+      } catch (scanErr) {
+        log.warn('Historical scan failed (non-fatal)', { event: 'HISTORICAL_SCAN_ERROR', error: String(scanErr) });
+      }
+
+      // Block-based polling for new deposits — uses eth_getLogs (via queryFilter) on
+      // each new block rather than eth_newFilter + eth_getFilterChanges.  Filters
+      // expire on Anvil (and many RPC providers) after ~5 min of inactivity; block
+      // polling has no such expiry and avoids the silent "filter not found" failure.
+      // provider.on('block') polls eth_blockNumber every pollingIntervalMs — no filter.
+      let blockProcessing = Promise.resolve();
+      provider.on('block', (blockNumber: number) => {
+        blockProcessing = blockProcessing.then(async () => {
+          if (blockNumber <= scanHead) return;
+          const from = scanHead + 1;
+          const to   = blockNumber;
+          scanHead   = blockNumber;
+          try {
+            const newEvents = await contract.queryFilter(contract.filters.Deposit(), from, to) as ethers.EventLog[];
+            for (const ev of newEvents) {
+              try {
+                await processDeposit(ev.transactionHash, ev.args[0] as string, ev.args[1] as bigint, ev.blockNumber);
+              } catch (evErr) {
+                log.error('Block scan deposit error', { event: 'DEPOSIT_HANDLER_ERROR', txHash: ev.transactionHash, error: String(evErr) });
+              }
+            }
+          } catch (err) {
+            // Roll back scanHead so the range is retried on the next block.
+            scanHead = from - 1;
+            log.error('Block scan error', { event: 'DEPOSIT_HANDLER_ERROR', txHash: '', error: String(err) });
+          }
+        }).catch((err) => {
+          log.error('Unhandled error in evm-listener block listener', { event: 'BLOCK_LISTENER_ERROR', error: String(err), stack: (err as Error).stack });
+        });
+      });
 
       provider.on('error', () => {
         reconnectionsTotal.inc({ chain: 'ethereum' });
@@ -132,7 +192,7 @@ async function runListener() {
         scheduleReconnect();
       });
     } catch (err) {
-      console.error('[EVM Listener] Connect error:', err);
+      log.error('EVM connection error', { event: 'EVM_CONNECTION_ERROR', error: String(err) });
       reconnectionsTotal.inc({ chain: 'ethereum' });
       scheduleReconnect();
     }
@@ -144,7 +204,7 @@ async function runListener() {
       config.baseReconnectDelayMs * Math.pow(2, attempt),
       config.maxReconnectDelayMs,
     );
-    console.log(`[EVM Listener] Reconnecting in ${delay}ms (attempt ${attempt})`);
+    log.warn('Reconnecting to EVM node', { event: 'EVM_RECONNECTING', attempt, delayMs: delay });
     setTimeout(listen, delay);
   }
 
@@ -167,7 +227,7 @@ async function runListener() {
     res.statusCode = 404;
     res.end();
   });
-  server.listen(3010, () => console.log('[EVM Listener] Metrics :3010'));
+  server.listen(config.metricsPort, () => log.info('Service started', { event: 'SERVICE_STARTED', port: config.metricsPort }));
 
   process.on('SIGTERM', async () => {
     provider?.removeAllListeners();
@@ -177,7 +237,11 @@ async function runListener() {
   });
 }
 
+process.on('unhandledRejection', (reason) => {
+  log.error('Unhandled rejection', { event: 'STARTUP_FAILED', error: String(reason) });
+});
+
 runListener().catch((e) => {
-  console.error(e);
+  log.error('Fatal startup error', { event: 'STARTUP_FAILED', error: String(e), stack: (e as Error).stack });
   process.exit(1);
 });

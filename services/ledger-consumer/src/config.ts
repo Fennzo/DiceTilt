@@ -1,6 +1,15 @@
 export const config = {
   kafkaBrokers: (process.env.KAFKA_BROKERS || 'localhost:29092').split(','),
   kafkaGroupId: process.env.KAFKA_GROUP_ID || process.env.LEDGER_KAFKA_GROUP_ID || 'ledger-persistent-group',
+  kafkaSessionTimeoutMs: parseInt(process.env['KAFKA_SESSION_TIMEOUT_MS'] ?? '60000', 10),
+  kafkaHeartbeatIntervalMs: parseInt(process.env['KAFKA_HEARTBEAT_INTERVAL_MS'] ?? '5000', 10),
+  kafkaLagPollIntervalMs: parseInt(process.env['KAFKA_LAG_POLL_MS'] ?? '15000', 10),
   dbUrl: process.env.DATABASE_URL || 'postgresql://dicetilt:dicetilt_dev_pass@localhost:5432/dicetilt',
+  dbPoolMax: parseInt(process.env['DB_POOL_MAX'] ?? '20', 10),
+  dbIdleTimeoutMs: parseInt(process.env['DB_IDLE_TIMEOUT_MS'] ?? '30000', 10),
+  dbConnectionTimeoutMs: parseInt(process.env['DB_CONN_TIMEOUT_MS'] ?? '5000', 10),
   redisUri: process.env.REDIS_URI || 'redis://localhost:6379',
+  redisMaxRetries: parseInt(process.env['REDIS_MAX_RETRIES'] ?? '3', 10),
+  betBatchSize: parseInt(process.env['BET_BATCH_SIZE'] ?? '500', 10),
+  metricsPort: parseInt(process.env['METRICS_PORT'] ?? '3030', 10),
 };

@@ -28,6 +28,7 @@ All user-facing and session-related interaction flows. For blockchain-specific d
 | 16 | Caching — Balance Eviction Recovery | Caching |
 | 17 | WebSocket PING / PONG Keep-Alive | Infrastructure |
 | 18 | WebSocket Connection State Machine | Infrastructure |
+| 19 | Developer & Testing Infrastructure (TEST_MODE + /?demo=1) | Developer Tools |
 
 ---
 
@@ -84,7 +85,7 @@ sequenceDiagram
 
 ## Flow 2 — WebSocket Connection Upgrade
 
-After obtaining a JWT, the client upgrades to a persistent WebSocket connection.
+After obtaining a JWT, the client upgrades to a persistent WebSocket connection. The JWT is **never** placed in the URL or HTTP headers — it is sent as the first WebSocket frame after the connection is established, preventing the token from appearing in Nginx access logs or browser history.
 
 ```mermaid
 sequenceDiagram
@@ -93,24 +94,39 @@ sequenceDiagram
     participant API as API Gateway
     participant Redis as Redis
 
-    B->>N: GET /ws  Upgrade: websocket  Authorization: Bearer {JWT}
-    Note over N: nginx.conf must pass Upgrade + Connection headers (Constraint 13)
+    B->>N: GET /ws  Upgrade: websocket  (no JWT — bare HTTP upgrade)
+    Note over N: nginx.conf passes Upgrade + Connection headers (Constraint 13)
     N->>API: forward WebSocket upgrade request
+    API-->>B: HTTP 101 Switching Protocols — raw socket established
 
-    API->>API: jwt.verify(token) → { userId, walletAddress, exp }
+    Note over API: 10-second auth timeout — no PONG/other frames until AUTH_OK; timeout → close(1008) + dicetilt_auth_failures_total
+    Note over API: maxPayload = 64 KB (cap incoming frame size — default 100 MB is unsafe)
 
-    alt JWT expired or malformed
-        API-->>B: HTTP 401 — connection refused
+    B->>API: WS send → { type: "AUTH", token: "eyJ..." }  ← first frame (must arrive within 10s)
+    API->>API: AuthMessageSchema.parse(frame) — validate shape
+    API->>API: jwt.verify(token) → { userId, walletAddress }
+
+    alt First frame is not AUTH (e.g. BET_REQUEST, PING), or JWT expired / malformed
+        Note over API: Increment dicetilt_auth_failures_total
+        API-->>B: ws.close(1008, "first frame must be AUTH" | "invalid token")
+        Note over B: Connection closed — client must re-obtain a JWT and retry
     else JWT valid
         API->>Redis: GET session:{userId}
-        Redis-->>API: "active"
 
-        alt Session revoked (key missing)
-            API-->>B: HTTP 401 — connection refused
-        else Session active
-            API->>API: register WebSocket connection in memory map (userId → ws socket)
-            API-->>B: HTTP 101 Switching Protocols
-            Note over B, API: Persistent bi-directional connection established
+        alt Session revoked (key missing or expired)
+            Note over API: Increment dicetilt_auth_failures_total
+            API->>B: WS push → { type: "SESSION_REVOKED" }
+            API->>API: ws.close()
+        else Session active ("active" value returned)
+            Note over API: Enforce per-user connection cap (MAX_CONNECTIONS_PER_USER = 5)
+            alt User already has 5 open sockets
+                Note over API: Increment dicetilt_auth_failures_total
+                API-->>B: ws.close(1008, "connection limit reached")
+            else Under limit
+                API->>API: register WebSocket in memory map (userId → Set<WebSocket>)
+                API->>B: WS push → { type: "AUTH_OK" }
+                Note over B, API: Persistent bi-directional connection fully active
+            end
         end
     end
 ```
@@ -207,11 +223,15 @@ sequenceDiagram
     API->>API: Zod.parse(frame) — validate all fields (wagerAmount > 0, target 2–98, direction, chain, currency, clientSeed ≤ 64 chars)
     API->>API: check Redis session:{userId} still active
 
-    API->>Redis: EVAL lua_balance_check_deduct(userId, "ethereum", "ETH", 10)
-    Note over Redis: Atomic: GET balance, assert >= wager, SET balance - wager, INCR nonce, return newBalance + nonce
-    Redis-->>API: { success: true, newBalance: 90, nonce: 42 }
+    par Atomic balance deduct
+        API->>Redis: EVAL lua_balance_check_deduct(userId, "ethereum", "ETH", 10)
+        Note over Redis: Atomic: GET balance, assert >= wager, SET balance - wager, INCR nonce, return newBalance + nonce
+        Redis-->>API: { success: true, newBalance: 90, nonce: 42 }
+    and Fetch server seed
+        API->>API: getServerSeed(userId) — read from Redis (fallback: Postgres wallets.active_server_seed)
+    end
+    Note over API: Promise.all resolves — balance deduct and seed fetch complete before PF call
 
-    API->>API: fetch serverSeed from Redis/Postgres for userId
     API->>PF: POST /api/pf/calculate { clientSeed: "abc123", nonce: 42, serverSeed: "a3f8..." }
     Note over PF: PF Worker is stateless — Gateway passes all inputs
     PF->>PF: HMAC-SHA256(serverSeed + ":" + clientSeed + ":" + nonce)
@@ -220,14 +240,20 @@ sequenceDiagram
 
     Note over API: direction="under", gameResult=22 < target=50 → WIN
     API->>API: multiplier = 99 / (50 - 1) = 2.0204; payoutAmount = 10 * 2.0204 = 20.20
-    API->>Redis: EVAL lua_credit_payout(userId, "ethereum", "ETH", 20.20)
-    Redis-->>API: { newBalance: 110.20 }
 
-    API->>Kafka: produce BetResolved { bet_id: uuid, user_id, chain, currency, wager: 10, payout: 20.20, result: 22, hash: "d4e8...", nonce: 42, clientSeed }
-    Note over API,B: ← entire path above completes in <20ms
+    Note over API: settleBetAsync (lua_credit_payout) and produceBetResolved are fire-and-forget for latency SLO
+    API--)Redis: EVAL lua_credit_payout (settleBetAsync) — retries up to creditMaxAttempts (default 3) on transient Redis errors
+    API--)Kafka: produce BetResolved { bet_id, user_id, chain, currency, wager, payout, result, hash, nonce, clientSeed } — .catch() logs KAFKA_PRODUCE_ERROR; no durable retry
 
-    API-->>N: WS send → { type: "BET_RESULT", betId, gameResult: 22, gameHash, nonce: 42, wagerAmount: 10, payoutAmount: 20.20, target: 50, direction: "under", multiplier: 2.0204, newBalance: 110.20, chain: "ethereum", currency: "ETH", timestamp }
-    N-->>B: display win + updated balance
+    Note over API: newBalance in WS message = 90 (post-deduct, PRE-credit — lua_credit_payout not yet applied)
+    API-->>N: WS send → { type: "BET_RESULT", betId, gameResult: 22, gameHash, nonce: 42, wagerAmount: 10, payoutAmount: 20.20, target: 50, direction: "under", multiplier: 2.0204, newBalance: 90, chain: "ethereum", currency: "ETH", timestamp }
+    N-->>B: deliver WS frame
+    Note over API,B: ← entire synchronous path above completes in <20ms
+
+    Note over B: Frontend compensates for pre-credit newBalance:
+    Note over B: displayedBalance = msg.newBalance + msg.payoutAmount = 90 + 20.20 = 110.20
+    Note over B: (payoutAmount is 0 on a loss, so this formula is always correct)
+    B->>B: updateBalance("ethereum", "ETH", 110.20) — display win + correct balance
 
     Note over Kafka, PG: Async ACID settlement — independent of client response
     LC->>Kafka: consume BetResolved
@@ -235,6 +261,12 @@ sequenceDiagram
     PG-->>LC: 1 row inserted
     LC->>Kafka: commit offset
 ```
+
+### Reliability notes
+
+**lua_credit_payout (settleBetAsync):** Fire-and-forget for latency; not awaited before WS send. `settleBetAsync` retries up to `creditMaxAttempts` (default 3) on transient Redis errors. On final failure it logs `REDIS_CREDIT_ERROR` and returns — funds remain in escrow until manual reconciliation or a future retry worker. The `WS send → { ... newBalance ... }` uses `optimisticBalance` (post-escrow, pre-credit); the frontend compensates with `displayedBalance = msg.newBalance + msg.payoutAmount`.
+
+**BetResolved:** Fire-and-forget for latency. `.catch()` logs `KAFKA_PRODUCE_ERROR` with `betId` and `userId`; there is no durable retry. If produce fails, the Ledger Consumer never receives the event; reconciliation: API Gateway audit log has `BET_RESOLVED` for the bet; compare `transactions` table to audit logs to identify missing rows. **Recommended future:** RPUSH failed events to a Redis list (e.g. `kafka:bet_resolved:retry`) and a worker republishes with at-least-once semantics; or use Kafka producer with `acks: -1` and retries (currently used) plus a dead-letter queue for failed sends.
 
 ---
 
@@ -256,9 +288,9 @@ sequenceDiagram
     PF-->>API: { gameResult: 72, gameHash: "a1b2..." }
 
     Note over API: direction="under", gameResult=72 >= target=50 → LOSS
-    Note over API: payoutAmount = 0. No Redis credit step.
+    Note over API: payoutAmount = 0. lua_credit_payout (settleBetAsync) still runs — releases escrow, credits 0. produceBetResolved fire-and-forget.
 
-    API->>Kafka: produce BetResolved { ..., payout: 0, result: 72 }
+    API--)Kafka: produce BetResolved { ..., payout: 0, result: 72 } — .catch() logs KAFKA_PRODUCE_ERROR
     API-->>B: WS → { type: "BET_RESULT", gameResult: 72, payoutAmount: 0, target: 50, direction: "under", newBalance: 90, ... }
     Note over B: Display loss. Balance reflects deducted wager only.
 ```
@@ -291,21 +323,26 @@ sequenceDiagram
 
 ## Flow 9 — Bet, Rate Limited (Sliding Window Triggered)
 
+The sliding window rate limiter is **fully wired** into the WS bet handler. It is checked before any balance operation — rejections are cheap and do not touch Redis balance keys.
+
 ```mermaid
 sequenceDiagram
     participant B as Browser
     participant API as API Gateway
     participant Redis as Redis
 
-    B->>API: WS → { type: "BET_REQUEST", ... } (61st request within 60 seconds)
-    API->>Redis: EVAL lua_sliding_window_check(ip, windowMs=60000, limit=60)
-    Note over Redis: Lua: ZREMRANGEBYSCORE (prune old), ZCOUNT (count in window)
-    Note over Redis: count = 61 > limit = 60 → reject
-    Redis-->>API: { allowed: false, retryAfter: 3400 }
+    B->>API: WS → { type: "BET_REQUEST", ... } (31st bet within the current 1-second window)
+    API->>Redis: EVAL lua_rate_limit(key="ratelimit:{userId}:bet", now=Date.now(), windowSeconds=1, limit=30)
+    Note over Redis: Lua (atomic): ZREMRANGEBYSCORE (prune entries older than 1s)
+    Note over Redis: ZCARD → 30 (already at limit) → return 0
+    Redis-->>API: 0 (rejected)
 
-    API-->>B: WS → { type: "ERROR", code: "RATE_LIMITED", message: "Too many requests" }
-    Note over API: Increment dicetilt_rate_limit_rejections_total{limiter_type="sliding_window"}
+    API-->>B: WS → { type: "ERROR", code: "RATE_LIMITED", message: "Too many bets — slow down" }
+    Note over API: Increment dicetilt_rate_limit_rejections_total{limiter_type="bet"}
+    Note over API: Balance, PF Worker, and Kafka are never touched on rate-limited requests
 ```
+
+> **Implementation:** `checkRateLimit(userId, 'bet', 1, 30)` — 30 bets per second per user. The Lua script uses a Redis ZSET keyed `ratelimit:{userId}:bet`. `dicetilt_rate_limit_rejections_total{limiter_type="bet"}` is incremented **only** when the rate-limit check succeeds and returns a rejection (limit exceeded). If the Redis call itself fails, the handler **fails closed** — reject the bet with `INTERNAL_ERROR`, increment `dicetilt_redis_error_rejections_total` (not `dicetilt_rate_limit_rejections_total`), and log `REDIS_UNAVAILABLE`.
 
 ---
 
@@ -518,12 +555,15 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
-    [*] --> CONNECTING : Client initiates WS upgrade with JWT
+    [*] --> CONNECTING : Client initiates bare WS upgrade (no JWT in URL or headers)
 
-    CONNECTING --> AUTHENTICATED : JWT valid + Redis session key exists
-    CONNECTING --> REJECTED : JWT invalid / expired / session revoked
+    CONNECTING --> AUTH_PENDING : HTTP 101 accepted — 10s auth timer started
+    AUTH_PENDING --> AUTHENTICATED : AUTH frame received, JWT valid, session active, connection cap not exceeded
+    AUTH_PENDING --> REJECTED : 10s timeout elapsed with no AUTH frame
+    AUTH_PENDING --> REJECTED : First frame is not AUTH, or JWT invalid / expired
+    AUTH_PENDING --> REJECTED : Session revoked or per-user connection limit (5) reached
 
-    REJECTED --> [*] : HTTP 401 — connection closed
+    REJECTED --> [*] : ws.close(1008) — connection terminated
 
     AUTHENTICATED --> BETTING : WS BET_REQUEST received and Zod-validated
     AUTHENTICATED --> AUTHENTICATED : PING received → PONG sent
@@ -539,3 +579,60 @@ stateDiagram-v2
 
     CLOSED --> [*] : Connection terminated, resources freed
 ```
+
+---
+
+## Flow 19 — Developer & Testing Infrastructure
+
+### 19.1 `TEST_MODE` Dev Token Endpoint
+
+When `TEST_MODE=true` (set in `docker-compose.yml`), the API Gateway exposes an additional route that bypasses EIP-712 wallet signing. This is used by the k6 load tests to authenticate programmatically without a real wallet.
+
+```mermaid
+sequenceDiagram
+    participant K6 as k6 Load Test Script
+    participant API as API Gateway (TEST_MODE=true)
+    participant PG as PostgreSQL
+    participant Redis as Redis
+
+    Note over K6: Load test needs a JWT without going through EIP-712
+    K6->>API: GET /api/v1/dev/token?walletIndex=0
+    Note over API: Route only active when config.testMode && NODE_ENV !== 'production'
+    API->>API: derive deterministic Hardhat wallet address for index 0
+    API->>API: upsert user + wallets in Postgres (same logic as /auth/verify)
+    API->>Redis: SET session:{userId} "active" EX 86400
+    API->>Redis: SET user:{userId}:balance:ethereum:ETH "10"
+    API->>API: jwt.sign({ userId, walletAddress }) → JWT
+    API-->>K6: { token: "eyJ..." }
+
+    Note over K6: Use JWT for all subsequent WS connections and REST calls
+```
+
+> **Security:** This endpoint is guarded by `config.testMode && process.env.NODE_ENV !== 'production'`; otherwise it returns 404. A startup sanity check exits the process if `TEST_MODE=true` while `NODE_ENV=production` to catch misconfiguration early. The `TEST_MODE` env var is explicitly set to `"true"` only in `docker-compose.yml` and only for the PoC demo stack.
+
+---
+
+### 19.2 `/?demo=1` Frontend Shortcut
+
+Opening the frontend at `http://localhost/?demo=1` pre-loads Hardhat account #1 (index 1) as the burner wallet instead of generating a random one. This account is pre-funded on Anvil and makes it easy to test the Deposit flow without manually copying a private key.
+
+**Security:** Demo mode is gated by `DEMO_MODE = isLocalhost() && params.get('demo') === '1'`. The test mnemonic is only used when the hostname is `localhost`, `127.0.0.1`, or `*.local`; on production domains, `?demo=1` is ignored and `ethers.Wallet.createRandom()` is used. For production builds, run `BUILD_ENV=production node scripts/build-frontend.js` to strip the mnemonic entirely — output goes to `frontend/dist/`. API/WS URLs use `location.origin` / `location.host`, so demo is implicitly limited to the page's origin (localhost when testing locally).
+
+```mermaid
+sequenceDiagram
+    participant Browser as Browser
+    participant JS as index.html JavaScript
+    participant Anvil as Hardhat/Anvil :8545
+
+    Browser->>JS: load index.html?demo=1
+    JS->>JS: DEMO_MODE = isLocalhost() && params.get('demo') === '1'
+    Note over JS: Only true on localhost / 127.0.0.1 / *.local
+    JS->>JS: if DEMO_MODE: wallet = HDNodeWallet.fromMnemonic(Hardhat mnemonic, "m/44'/60'/0'/0/1")
+    Note over JS: Hardhat account #1 — deterministic, pre-funded with 10000 ETH by Anvil
+    JS->>JS: else: ethers.Wallet.createRandom() or stored from localStorage
+    JS->>Anvil: eth_getBalance(account1Address) — confirm funded (when demo)
+    Anvil-->>JS: "10000000000000000000000" (10000 ETH)
+    Note over JS: Continue normal auth flow (EIP-712 challenge → verify → JWT → WS)
+```
+
+> **Purpose:** Simplifies recruiter demos of the Deposit feature. Hardhat account #1's wallet address is already known to the system after a normal auth flow, and its large ETH balance makes it easy to demonstrate multiple on-chain deposits without running out of test ETH.

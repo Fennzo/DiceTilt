@@ -1,6 +1,9 @@
 import { Kafka, type Producer } from 'kafkajs';
 import { config } from './config.js';
 import { KAFKA_TOPICS, type BetResolvedEvent, type WithdrawalRequestedEvent } from '@dicetilt/shared-types';
+import { createLoggers } from '@dicetilt/logger';
+
+const { app: log } = createLoggers('api-gateway');
 
 const kafka = new Kafka({
   clientId: 'api-gateway',
@@ -12,13 +15,13 @@ let producer: Producer;
 export async function connectProducer(): Promise<void> {
   producer = kafka.producer({ idempotent: true });
   await producer.connect();
-  console.log('[Kafka] Producer connected');
+  log.info('Kafka producer connected', { event: 'KAFKA_PRODUCER_CONNECTED' });
 }
 
 export async function disconnectProducer(): Promise<void> {
   if (producer) {
     await producer.disconnect();
-    console.log('[Kafka] Producer disconnected');
+    log.info('Kafka producer disconnected', { event: 'KAFKA_PRODUCER_DISCONNECTED' });
   }
 }
 

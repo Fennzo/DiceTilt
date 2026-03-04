@@ -4,14 +4,17 @@ WORKDIR /app
 
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json tsconfig.base.json .npmrc ./
 COPY packages/shared-types/package.json packages/shared-types/
+COPY packages/logger/package.json packages/logger/
 COPY services/provably-fair/package.json services/provably-fair/
 COPY services/api-gateway/package.json services/api-gateway/
 RUN pnpm install
 
 COPY packages/shared-types/ packages/shared-types/
+COPY packages/logger/ packages/logger/
 COPY services/provably-fair/ services/provably-fair/
 
 RUN npx tsc -p packages/shared-types/tsconfig.json && \
+    npx tsc -p packages/logger/tsconfig.json && \
     npx tsc -p services/provably-fair/tsconfig.json
 
 WORKDIR /app/services/provably-fair

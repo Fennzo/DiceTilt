@@ -55,10 +55,15 @@ export interface SessionRevokedMessage {
   type: 'SESSION_REVOKED';
 }
 
+export interface AuthOkMessage {
+  type: 'AUTH_OK';
+}
+
 export type ServerMessage =
   | BetResultMessage
   | BalanceUpdateMessage
   | WithdrawalCompletedMessage
   | ErrorMessage
   | PongMessage
-  | SessionRevokedMessage;
+  | SessionRevokedMessage
+  | AuthOkMessage;

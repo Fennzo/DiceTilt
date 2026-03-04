@@ -1,35 +1,8 @@
-# Dependencies
 node_modules/
-
-# Build output
 dist/
-
-# Environment — never commit real secrets
 .env
-
-# Logs
 *.log
-npm-debug.log*
-pnpm-debug.log*
-
-# OS artifacts
 .DS_Store
 Thumbs.db
-
-# IDE / Editor local config
-.cursor/
-.claude/
-*.iml
-
-# Claude Code Router (personal LLM tooling, not part of the project)
 claude-code-router/
-
-# Test output
-results/
-
-# Hardhat / Foundry build artifacts
-contracts/evm/artifacts/
-contracts/evm/cache/
-contracts/evm/.openzeppelin/
-
-# pnpm lock is committed for reproducible installs — do NOT add pnpm-lock.yaml here
+/logs/

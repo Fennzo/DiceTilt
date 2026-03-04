@@ -3,11 +3,19 @@ import { Kafka } from 'kafkajs';
 import { config } from './config.js';
 import { KAFKA_TOPICS, type WithdrawalRequestedEvent, type WithdrawalCompletedEvent } from '@dicetilt/shared-types';
 import { register, collectDefaultMetrics, Counter } from 'prom-client';
+import { createLoggers } from '@dicetilt/logger';
+
+const { app: log, audit } = createLoggers('evm-payout-worker');
 
 collectDefaultMetrics();
 const completionsTotal = new Counter({
   name: 'dicetilt_withdrawal_completions_total',
   help: 'Withdrawals completed on-chain',
+  labelNames: ['chain'],
+});
+const payoutFailuresTotal = new Counter({
+  name: 'dicetilt_withdrawal_failures_total',
+  help: 'Withdrawals that failed to execute on-chain after all retries',
   labelNames: ['chain'],
 });
 
@@ -17,7 +25,7 @@ const TREASURY_ABI = [
 
 async function main() {
   if (!config.privateKey || !config.treasuryAddress) {
-    console.error('[EVM Payout] TREASURY_OWNER_PRIVATE_KEY and TREASURY_CONTRACT_ADDRESS required');
+    log.error('Required config missing', { event: 'CONFIG_MISSING', missing: 'TREASURY_OWNER_PRIVATE_KEY or TREASURY_CONTRACT_ADDRESS' });
     process.exit(1);
   }
 
@@ -29,7 +37,7 @@ async function main() {
     clientId: 'evm-payout-worker',
     brokers: config.kafkaBrokers,
   });
-  const consumer = kafka.consumer({ groupId: 'evm-payout-group' });
+  const consumer = kafka.consumer({ groupId: config.kafkaGroupId });
   const producer = kafka.producer({ idempotent: true });
 
   await consumer.connect();
@@ -50,7 +58,7 @@ async function main() {
   // Attempt to send a payout, retrying up to maxRetries times on NONCE_EXPIRED.
   // NONCE_EXPIRED means a ghost tx from a previous session (race condition era)
   // occupies that nonce. Retrying lets ethers query a fresh nonce and skip it.
-  async function sendPayout(toAddress: string, amountWei: bigint, maxRetries = 20): Promise<string> {
+  async function sendPayout(toAddress: string, amountWei: bigint, withdrawalId: string, maxRetries = config.payoutMaxRetries): Promise<string> {
     let lastErr: unknown;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
@@ -61,7 +69,7 @@ async function main() {
         lastErr = err;
         const code = (err as { code?: string })?.code;
         if (code === 'NONCE_EXPIRED' && attempt < maxRetries) {
-          console.warn(`[EVM Payout] NONCE_EXPIRED on attempt ${attempt + 1} — retrying with fresh nonce`);
+          log.warn('NONCE_EXPIRED — retrying with fresh nonce', { event: 'NONCE_EXPIRED_RETRY', withdrawalId, attempt: attempt + 1, maxRetries });
           continue;
         }
         throw err;
@@ -72,15 +80,21 @@ async function main() {
 
   await consumer.run({
     partitionsConsumedConcurrently: 1,
-    eachMessage: async ({ topic, message }) => {
+    eachMessage: async ({ topic: _topic, message }) => {
       const raw = message.value?.toString();
       if (!raw) return;
-      const ev: WithdrawalRequestedEvent = JSON.parse(raw);
+      let ev: WithdrawalRequestedEvent;
+      try {
+        ev = JSON.parse(raw) as WithdrawalRequestedEvent;
+      } catch {
+        log.error('Malformed Kafka message — skipping', { event: 'PAYOUT_ERROR', withdrawalId: 'unknown', error: 'JSON parse failed' });
+        return;
+      }
       if (ev.chain !== 'ethereum') return;
 
       // In-session idempotency: skip Kafka at-least-once redeliveries.
       if (completedThisRun.has(ev.withdrawal_id)) {
-        console.log('[EVM Payout] Skip duplicate', ev.withdrawal_id);
+        log.info('Skip duplicate withdrawal', { event: 'WITHDRAWAL_DUPLICATE_SESSION', withdrawalId: ev.withdrawal_id });
         return;
       }
 
@@ -88,13 +102,13 @@ async function main() {
       // Prevents concurrent handlers on different partitions from racing for
       // the same wallet nonce.
       while (payoutBusy) {
-        await new Promise<void>(resolve => setTimeout(resolve, 50));
+        await new Promise<void>(resolve => setTimeout(resolve, config.payoutMutexSpinMs));
       }
       payoutBusy = true;
 
       try {
         const amountWei = ethers.parseEther(ev.amount);
-        const txHash = await sendPayout(ev.to_address, amountWei);
+        const txHash = await sendPayout(ev.to_address, amountWei, ev.withdrawal_id);
 
         const completed: WithdrawalCompletedEvent = {
           withdrawal_id: ev.withdrawal_id,
@@ -115,9 +129,26 @@ async function main() {
 
         completedThisRun.add(ev.withdrawal_id);
         completionsTotal.inc({ chain: 'ethereum' });
-        console.log('[EVM Payout] WithdrawalCompleted', ev.withdrawal_id, txHash);
+        audit.info('Payout executed', {
+          event: 'PAYOUT_EXECUTED',
+          withdrawalId: ev.withdrawal_id,
+          userId: ev.user_id,
+          amount: ev.amount,
+          chain: 'ethereum',
+          currency: ev.currency,
+          txHash,
+          toAddress: ev.to_address,
+        });
       } catch (err: unknown) {
-        console.error('[EVM Payout] Error processing', ev.withdrawal_id, ':', (err as Error).message ?? err);
+        payoutFailuresTotal.inc({ chain: 'ethereum' });
+        log.error('Payout error', {
+          event: 'PAYOUT_ERROR',
+          withdrawalId: ev.withdrawal_id,
+          error: (err as Error).message ?? String(err),
+          stack: (err as Error).stack,
+        });
+        // The Redis balance was pre-deducted at withdrawal-request time.
+        // Manual recovery required: re-queue this withdrawal_id or credit back via admin.
       } finally {
         payoutBusy = false;
       }
@@ -139,7 +170,7 @@ async function main() {
     res.statusCode = 404;
     res.end();
   });
-  server.listen(3020, () => console.log('[EVM Payout] Metrics :3020'));
+  server.listen(config.metricsPort, () => log.info('Service started', { event: 'SERVICE_STARTED', port: config.metricsPort }));
 
   process.on('SIGTERM', async () => {
     await consumer.disconnect();
@@ -148,7 +179,12 @@ async function main() {
   });
 }
 
+process.on('unhandledRejection', (reason) => {
+  log.error('Unhandled rejection', { event: 'STARTUP_FAILED', error: String(reason) });
+  process.exit(1);
+});
+
 main().catch((e) => {
-  console.error(e);
+  log.error('Fatal startup error', { event: 'STARTUP_FAILED', error: String(e), stack: (e as Error).stack });
   process.exit(1);
 });

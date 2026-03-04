@@ -1,6 +1,10 @@
 import express from 'express';
 import client from 'prom-client';
 import { router } from './routes.js';
+import { pool } from './pool.js';
+import { createLoggers } from '@dicetilt/logger';
+
+const { app: log } = createLoggers('provably-fair');
 
 client.collectDefaultMetrics({ prefix: 'dicetilt_pf_' });
 
@@ -16,14 +20,23 @@ app.get('/metrics', async (_req, res) => {
 const PORT = parseInt(process.env['PF_PORT'] ?? '3001', 10);
 
 const server = app.listen(PORT, () => {
-  console.log(`[PF Worker] listening on :${PORT}`);
+  log.info('Service started', { event: 'SERVICE_STARTED', port: PORT });
 });
 
 function gracefulShutdown(signal: string) {
-  console.log(`[PF Worker] ${signal} received, shutting down...`);
-  server.close(() => {
-    console.log('[PF Worker] HTTP server closed');
-    process.exit(0);
+  log.info('Shutting down', { event: 'SERVICE_SHUTTING_DOWN', signal });
+  server.close((err) => {
+    if (err) {
+      log.error('Server close error', { event: 'SHUTDOWN_ERROR', error: String(err) });
+    }
+    Promise.resolve(pool.destroy())
+      .then(() => {
+        process.exit(err ? 1 : 0);
+      })
+      .catch((destroyErr) => {
+        log.error('Pool destroy error', { event: 'SHUTDOWN_ERROR', error: String(destroyErr) });
+        process.exit(1);
+      });
   });
 }
 

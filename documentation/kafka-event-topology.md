@@ -165,8 +165,8 @@ interface TradeExecutedEvent {
 // consumed by: Manual audit / alerting
 // ─────────────────────────────────────────────
 interface DeadLetterMessage {
-  original_topic:   string;          // e.g., "BetResolved"
-  original_payload: BetResolvedEvent | DepositReceivedEvent;
+  original_topic:   string;          // e.g., "BetResolved" | "DepositReceived" | "WithdrawalCompleted"
+  original_payload: BetResolvedEvent | DepositReceivedEvent | WithdrawalCompletedEvent;
   error_message:    string;          // exception message
   error_stack?:     string;          // stack trace
   retry_count:      number;          // number of retries before DLQ routing
@@ -203,6 +203,21 @@ Both payout workers subscribe to `WithdrawalRequested` using *different consumer
 1. It requires no Kafka admin configuration changes when adding a new chain — just deploy a new worker with a new consumer group.
 2. It is explicit and auditable — the filter logic lives in application code, not Kafka configuration.
 3. Both workers commit their offsets independently, so a Solana payout failure does not block EVM payouts.
+
+**Payout worker in-session idempotency (`completedThisRun` Set):**
+
+Each payout worker maintains an ephemeral in-memory `Set<string>` (`completedThisRun`) of `withdrawal_id` values paid in the current process session. Before processing a message, the worker checks this Set and skips if the ID was already paid. This **only** prevents within-process/session redeliveries of `WithdrawalRequested` (e.g., Kafka at-least-once redelivery before offset commit). The Set is cleared on restart and **cannot** protect against duplicates after a restart.
+
+**Cross-restart idempotency status:** The current system does **not** implement cross-restart idempotency. The Treasury contract has no withdrawal-id tracking or on-chain nonce/sequence checks for payouts. The payout worker performs no pre-send validation (no DB lookup to `withdrawals` and no on-chain state check before submitting transactions). If the worker restarts after sending a payout but before committing the `WithdrawalRequested` offset, Kafka will redeliver the message and the worker will submit a **duplicate on-chain payout**.
+
+> **⚠️ PRODUCTION WARNING:** The current system **cannot prevent duplicate payouts across restarts**. Do not use in production without implementing one or more of the following mitigations:
+> 1. **On-chain nonce/sequence checks** — Extend the Treasury contract to track a per-recipient or global payout sequence and reject duplicates.
+> 2. **Withdrawal-id tracking in contract** — Add a `mapping(bytes32 => bool) paidWithdrawals` (or similar) and require `withdrawal_id` in `payout()`; revert if already paid.
+> 3. **Pre-send validation** — Before calling `contract.payout()`, query the `withdrawals` table (or on-chain state) to confirm this `withdrawal_id` has not already been paid; skip if already recorded.
+
+**Ledger Consumer idempotency (`ON CONFLICT DO NOTHING`):**
+
+The Ledger Consumer's `INSERT INTO withdrawals ... ON CONFLICT (tx_hash) DO NOTHING` protects the **Ledger Consumer** from duplicate `WithdrawalCompleted` events (e.g., Kafka redelivery of the same event). It does **not** protect the payout worker from submitting duplicate on-chain transactions — that is a separate concern handled (or not) by the payout worker's own idempotency measures.
 
 ---
 

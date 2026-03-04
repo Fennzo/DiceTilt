@@ -11,8 +11,10 @@
     "test": "echo \"Tests in /tests/unit\" && exit 0"
   },
   "dependencies": {
+    "@dicetilt/logger": "workspace:*",
     "@dicetilt/shared-types": "workspace:*",
     "express": "^4.21.0",
+    "piscina": "^4.0.0",
     "prom-client": "^15.1.0"
   },
   "devDependencies": {

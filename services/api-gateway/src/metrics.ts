@@ -2,6 +2,8 @@ import client from 'prom-client';
 
 client.collectDefaultMetrics({ prefix: 'dicetilt_' });
 
+// Label cardinality: outcome={win,loss} × chain={ethereum,solana} × currency={ETH,SOL,USDC,USDT}
+// Max time series: 2 × 2 × 4 = 16. Do NOT add unbounded label values (e.g. userId, betId).
 export const betsTotal = new client.Counter({
   name: 'dicetilt_bets_total',
   help: 'Total bets placed',
@@ -38,8 +40,18 @@ export const doubleSpendRejections = new client.Counter({
 
 export const rateLimitRejections = new client.Counter({
   name: 'dicetilt_rate_limit_rejections_total',
-  help: 'Rate limit rejections',
+  help: 'Rate limit rejections (user exceeded limit)',
   labelNames: ['limiter_type'] as const,
+});
+
+export const rateLimitRedisErrors = new client.Counter({
+  name: 'dicetilt_rate_limit_redis_errors_total',
+  help: 'Rate limit check failures due to Redis unavailability (infrastructure error, not user rejection).',
+});
+
+export const redisErrorRejections = new client.Counter({
+  name: 'dicetilt_redis_error_rejections_total',
+  help: 'Bet rejections due to Redis unavailability (fail closed). Alert on rate > 0.',
 });
 
 export const authFailures = new client.Counter({
@@ -47,6 +59,7 @@ export const authFailures = new client.Counter({
   help: 'EIP-712 auth failures',
 });
 
+// Label cardinality: chain={ethereum,solana} × currency={ETH,SOL,USDC,USDT} = max 8 series.
 export const wagerVolumeTotal = new client.Counter({
   name: 'dicetilt_wager_volume_total',
   help: 'Total volume wagered',

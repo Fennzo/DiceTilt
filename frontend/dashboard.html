@@ -21,17 +21,62 @@
     <h1>DiceTilt — System Dashboard</h1>
     <nav><a href="index.html">Back to Game</a></nav>
   </div>
-  <iframe id="grafana-frame" src="http://localhost:3001/d/dicetilt/dicetilt?orgId=1&kiosk&refresh=5s"></iframe>
-  <div class="fallback" id="fallback" style="display:none;">
+  <iframe id="grafana-frame" style="display:none;"></iframe>
+  <div class="fallback" id="fallback" style="display:flex;">
     <p>Grafana dashboard is loading...</p>
     <p>If it doesn't appear, open <a href="http://localhost:3001" target="_blank">localhost:3001</a> directly.</p>
   </div>
   <script>
+    const GRAFANA_BASE = 'http://localhost:3001';
+    const GRAFANA_DASHBOARD = GRAFANA_BASE + '/d/dicetilt/dicetilt?orgId=1&kiosk&refresh=5s';
     const iframe = document.getElementById('grafana-frame');
-    iframe.onerror = () => { iframe.style.display = 'none'; document.getElementById('fallback').style.display = 'flex'; };
-    setTimeout(() => {
-      try { if (!iframe.contentWindow.document.body.innerHTML) throw 0; } catch { iframe.style.display = 'none'; document.getElementById('fallback').style.display = 'flex'; }
-    }, 5000);
+    const fallback = document.getElementById('fallback');
+    const PROBE_TIMEOUT_MS = 5000;
+
+    function showIframe() {
+      iframe.style.display = 'block';
+      fallback.style.display = 'none';
+    }
+    function showFallback() {
+      iframe.style.display = 'none';
+      fallback.style.display = 'flex';
+    }
+
+    async function probeGrafana() {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+      try {
+        const res = await fetch(GRAFANA_BASE + '/api/health', { signal: controller.signal });
+        return res.ok;
+      } catch {
+        return false;
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+
+    function probeViaIframeLoad() {
+      let resolved = false;
+      const done = (ok) => {
+        if (resolved) return;
+        resolved = true;
+        clearTimeout(timer);
+        iframe.onload = null;
+        if (ok) showIframe(); else showFallback();
+      };
+      iframe.onload = () => done(true);
+      const timer = setTimeout(() => done(false), PROBE_TIMEOUT_MS);
+      iframe.src = GRAFANA_DASHBOARD;
+    }
+
+    probeGrafana().then(ok => {
+      if (ok) {
+        iframe.src = GRAFANA_DASHBOARD;
+        showIframe();
+      } else {
+        probeViaIframeLoad();
+      }
+    });
   </script>
 </body>
 </html>

@@ -2,7 +2,7 @@
 
 **Audience:** Software architects, senior engineers, technical reviewers.
 
-This document is the top-level structural reference for the DiceTilt system. For engineering constraints and business rules, see `implementation_plan.md`. For event message schemas, see `kafka-event-topology.md`. For the data model, see `database-schema.md`. For interaction flows, see `sequence-diagrams.md`, `blockchain-flows.md`, and `infrastructure-flows.md`.
+This document is the top-level structural reference for the DiceTilt system. For engineering constraints and business rules, see `implementation_plan.md`. For event message schemas, see `kafka-event-topology.md`. For the data model, see `database-schema.md`. For interaction flows, see `sequence-diagrams.md`, `blockchain-flows.md`, and `infrastructure-flows.md`. For Solana production requirements (commitment levels, ATA handling, USDC vs SOL, RPC infrastructure, and Trade Router context), see `solana-production-notes.md`.
 
 ---
 
@@ -120,7 +120,7 @@ graph TD
 | Layer | Services | Primary Responsibility |
 |---|---|---|
 | **Ingress** | Nginx | Single entry point. HTTP/WS routing, CORS headers, WebSocket protocol upgrade (`Upgrade` header injection), static `index.html` serving. |
-| **Application** | API Gateway | EIP-712 authentication, JWT issuance, WebSocket session lifecycle, Redis Lua atomic balance and nonce operations, Kafka event production for bets and withdrawals. **SUBSCRIBEs** to Redis channel `user:updates:{userId}` — on message, pushes BALANCE_UPDATE or WITHDRAWAL_COMPLETED to the user's WebSocket. Runs as clustered TypeScript-on-Node processes (one worker per CPU core) to parallelise signature verification and request handling. |
+| **Application** | API Gateway | EIP-712 authentication, JWT issuance, WebSocket session lifecycle, Redis Lua atomic balance and nonce operations, Kafka event production for bets and withdrawals. **WebSocket auth:** JWT is sent as the **first WS frame** (`{ type: "AUTH", token }`) after a bare HTTP 101 upgrade — never in the URL or headers (prevents token logging). A 10-second timer closes unauthenticated sockets. Per-user connection cap: 5. Max frame size: 64 KB. **SUBSCRIBEs** to Redis channel `user:updates:{userId}` — on message, pushes BALANCE_UPDATE or WITHDRAWAL_COMPLETED to the user's WebSocket. Runs as a **Node.js cluster** (one worker per CPU core). The cluster primary serves aggregated Prometheus metrics on internal port 9091 via `prom-client AggregatorRegistry`; worker processes register an IPC handler by constructing `new AggregatorRegistry()` on startup. |
 | **Cryptography** | Provably Fair Worker | **Stateless** HMAC-SHA256 engine. All inputs (including server seed) are passed by the API Gateway — the PF Worker never accesses Postgres or Redis. Generates seeds and computes hashes as a pure function. Accessible only via internal `PF_AUTH_TOKEN`. CPU-bound hash work is executed through a `piscina` Worker Threads pool to avoid event-loop blocking under concurrency. |
 | **Messaging** | Kafka (KRaft) | Durable async event bus. Decouples the synchronous sub-20ms game loop from async DB settlement, blockchain event processing, and payout execution. |
 | **Cache** | Redis | Primary balance and nonce read/write layer via atomic Lua scripts. Session registry with TTL-based revocation. Sliding window rate limiter via ZSET. **Pub/Sub:** Ledger Consumer PUBLISHes to `user:updates:{userId}` after balance/withdrawal updates; API Gateway SUBSCRIBEs and pushes BALANCE_UPDATE / WITHDRAWAL_COMPLETED to WebSocket clients in real time. |
@@ -131,7 +131,21 @@ graph TD
 | **Observability** | Prometheus, Grafana, 3 exporters | Pull-based metrics collection from all TypeScript services (`prom-client`) and infrastructure exporters. Pre-provisioned Grafana dashboard auto-loads at boot. |
 | **Automation** | Ansible, Ansible Vault *(production only)*, EDA | Deployment automation, encrypted secret management for payout private keys (production — PoC uses deterministic keys from `.env`), automated Kafka broker remediation via Prometheus alerting → EDA rulebook. |
 
-### 3.1 Runtime Concurrency Model (TypeScript on Node.js)
+### 3.1 Prometheus Metrics Prefix Convention
+
+All TypeScript services instrument default Node.js metrics via `prom-client`. The prefix differs by service:
+
+| Service | Default metrics prefix | Custom metrics prefix |
+|---|---|---|
+| API Gateway | `dicetilt_` | `dicetilt_` (e.g. `dicetilt_bets_total`) |
+| Provably Fair Worker | `dicetilt_pf_` | `dicetilt_` (e.g. `dicetilt_provably_fair_hash_duration_ms`) |
+| Ledger Consumer | `dicetilt_` | `dicetilt_` (e.g. `dicetilt_kafka_dlq_messages_total`) |
+| EVM Listener | `dicetilt_` | `dicetilt_` (e.g. `dicetilt_on_chain_deposits_total`) |
+| EVM Payout Worker | `dicetilt_` | `dicetilt_` (e.g. `dicetilt_withdrawal_completions_total`) |
+
+The PF Worker uses `prefix: 'dicetilt_pf_'` for its **default Node.js runtime metrics** (heap, event loop lag, etc.) to distinguish them from the API Gateway's runtime metrics in Grafana. The PF Worker's **custom metric** (`dicetilt_provably_fair_hash_duration_ms`) does not use this prefix — it is named explicitly and appears without it.
+
+### 3.2 Runtime Concurrency Model (TypeScript on Node.js)
 
 - TypeScript defines source language and type safety; runtime concurrency characteristics come from Node.js (`worker_threads`, `cluster`, libuv event loop).
 - Provably Fair hash computation is CPU-bound and therefore executed in a `piscina` Worker Threads pool.
@@ -139,11 +153,13 @@ graph TD
 - Kafka `BetResolved` topic uses 3 partitions; with 3 Ledger Consumer replicas in the same consumer group, this yields 3 parallel partition processors.
 - Ledger Consumer processes batches with per-user grouping and parallel writes across users, preserving per-user order while increasing throughput.
 
-### 3.2 Redis Pub/Sub — Real-Time Balance & Withdrawal Updates
+### 3.3 Redis Pub/Sub — Real-Time Balance & Withdrawal Updates
 
 The Ledger Consumer and API Gateway run in separate processes. The API Gateway holds the active WebSocket connection; the Ledger Consumer has no direct way to notify it. **Redis Pub/Sub** closes this gap:
 
-1. **Ledger Consumer** — After updating Postgres and Redis (on `DepositReceived` or `WithdrawalCompleted`), **PUBLISH** a message to channel `user:updates:{userId}`. Payload: `{ type: 'balance_update'|'withdrawal_completed', chain, currency, balance?, withdrawalId?, txHash? }`.
+1. **Ledger Consumer** — After processing each event, PUBLISHes to `user:updates:{userId}`:
+   - `DepositReceived` → one message: `{ type: 'BALANCE_UPDATE', chain, currency, balance }`
+   - `WithdrawalCompleted` → **two** messages in sequence: first `{ type: 'BALANCE_UPDATE', ... }` (so a reconnected client refreshes immediately), then `{ type: 'WITHDRAWAL_COMPLETED', withdrawalId, chain, currency, txHash, amount }` (so the UI can dismiss the "pending" state).
 2. **API Gateway** — **SUBSCRIBE** to `user:updates:*` (pattern subscription) or per-user channels. On message, look up the user's WebSocket from the in-memory session map and push `BALANCE_UPDATE` or `WITHDRAWAL_COMPLETED` to the browser.
 
 Without this, the user's balance would not update after a deposit until they place a bet or refresh the page — breaking the real-time demo experience.
@@ -170,9 +186,12 @@ Without this, the user's balance would not update after a deposit until they pla
 | Service | Internal Port | Host-Exposed Port | Protocol | Notes |
 |---|---|---|---|---|
 | Nginx | 80 | **80** | HTTP, WebSocket | Primary recruiter entry point |
-| API Gateway | 3000 | — | HTTP, WebSocket | Internal Docker network only |
-| Provably Fair Worker | 3001 | — | HTTP / gRPC | Internal only; protected by `PF_AUTH_TOKEN` |
-| Redis | 6379 | — | Redis Protocol | Internal only |
+| API Gateway (app) | 3000 | **3000** | HTTP, WebSocket | Express + WebSocket. Also exposed on host port 3000 for direct load testing (bypasses Nginx for accurate sub-20ms SLO measurement) |
+| API Gateway (metrics) | 9091 | — | HTTP | Internal only. The cluster primary serves aggregated Prometheus metrics here via `prom-client AggregatorRegistry.clusterMetrics()`. Prometheus scrapes `:9091/metrics`, not `:3000`. |
+| Provably Fair Worker | 3001 | — | HTTP | Internal only; protected by `PF_AUTH_TOKEN` |
+| EVM Listener | 3010 | — | HTTP | Internal only; `/metrics` and `/health` endpoints |
+| EVM Payout Worker | 3020 | — | HTTP | Internal only; `/metrics` and `/health` endpoints |
+| Redis | 6379 | **6380** (debug only) | Redis Protocol | Internal port 6379; host port 6380 exposed for local debugging (`redis-cli -p 6380`). **CRITICAL:** This port has NO authentication. Never expose it on any networked environment. For local debugging, ensure your host machine is not accessible from any network or enable auth. |
 | PostgreSQL | 5432 | — | TCP | Internal only |
 | Kafka (KRaft) | 29092 | — | Kafka Protocol | Internal broker listener |
 | Hardhat / Anvil | 8545 | **8545** | HTTP + WS JSON-RPC | Exposed for frontend burner wallet signing |
@@ -187,46 +206,43 @@ Without this, the user's balance would not update after a deposit until they pla
 
 ## 6. Docker Network Topology
 
-Two overlay networks enforce security isolation. The payout workers hold private keys and must never be reachable from the public network.
+All services share a single `backend-net` bridge network. External access is controlled exclusively by which container ports are published to the host — no internal service ports are reachable from the host unless explicitly mapped.
 
 ```mermaid
 graph LR
-    subgraph "Host Machine"
+    subgraph "Host Machine (published ports)"
         Browser["Browser\n:80"]
+        DevAPI["Direct API (load tests)\n:3000"]
         GrafanaHost["Grafana\n:3001"]
         PromHost["Prometheus\n:9090"]
         EVMHost["Hardhat/Anvil\n:8545"]
-        SolHost["Solana Validator\n:8899/:8900"]
+        RedisDebug["Redis (debug only)\n:6380"]
     end
 
-    subgraph "frontend-net — Docker overlay"
-        Nginx["Nginx\nBridge: host ↔ backend-net"]
-        API["API Gateway"]
-        PF["PF Worker"]
-    end
-
-    subgraph "backend-net — Docker overlay, isolated"
-        Redis["Redis"]
-        Kafka["Kafka"]
-        Postgres["PostgreSQL"]
-        Ledger["Ledger Consumer"]
-        EVMListen["EVM Listener"]
-        EVMPay["EVM Payout Worker\n— holds private key —"]
-        SolListen["Solana Listener"]
-        SolPay["Solana Payout Worker\n— holds private key —"]
-        RedisExp["Redis Exporter"]
-        PGExp["Postgres Exporter"]
-        KafkaExp["Kafka Exporter"]
-        Prom["Prometheus"]
-        Grafana["Grafana"]
+    subgraph "backend-net — single Docker bridge network"
+        Nginx["Nginx\n(host:80 → container:80)"]
+        API["API Gateway\n(host:3000 → container:3000)\nMetrics aggregator: internal :9091"]
+        PF["PF Worker\n(internal :3001)"]
+        Redis["Redis\n(internal :6379; host:6380 for debug)"]
+        Kafka["Kafka\n(internal :29092)"]
+        Postgres["PostgreSQL\n(internal :5432)"]
+        Ledger["Ledger Consumer\n(internal :3030)"]
+        EVMListen["EVM Listener\n(internal :3010)"]
+        EVMPay["EVM Payout Worker\n— holds private key — (internal :3020)"]
+        SolListen["Solana Listener *(stub)*"]
+        SolPay["Solana Payout Worker *(stub)*"]
+        Prom["Prometheus\n(host:9090 → container:9090)"]
+        Grafana["Grafana\n(host:3001 → container:3000)"]
     end
 
     Browser --> Nginx
+    DevAPI --> API
     GrafanaHost --> Grafana
     PromHost --> Prom
+    EVMHost -->|"JSON-RPC"| API
+    RedisDebug -.->|"debug only"| Redis
 
     Nginx --> API
-    Nginx --> PF
 
     API --> Redis
     API --> Kafka
@@ -241,18 +257,15 @@ graph LR
     EVMPay --> Kafka
     SolPay --> Kafka
 
-    RedisExp --> Redis
-    PGExp --> Postgres
-    KafkaExp --> Kafka
-
-    Prom --> RedisExp
-    Prom --> PGExp
-    Prom --> KafkaExp
-    Prom --> API
+    Prom -->|":9091/metrics (cluster aggregated)"| API
     Prom --> PF
     Prom --> Ledger
+    Prom --> EVMListen
+    Prom --> EVMPay
 
     Grafana --> Prom
 ```
 
-> **Security note:** The payout workers (`EVMPay`, `SolPay`) reside exclusively on `backend-net`. They have no inbound routes from Nginx or any user-facing service. Their only communication is outbound Kafka consumption and outbound blockchain RPC calls. In the PoC, private keys are deterministic Hardhat/Solana test keys loaded from `.env` (safe — local chain, no real value). In production, keys are injected via Ansible Vault at deploy time and never written to disk unencrypted.
+> **Security note (PoC):** The payout workers (`EVMPay`, `SolPay`) have no published host ports and receive no inbound routes from Nginx. Their only communication is outbound Kafka consumption and outbound blockchain RPC calls. In the PoC, private keys are deterministic Hardhat/Solana test keys loaded from `.env` (safe — local chain, no real value). **Production deployments MUST enforce strict network isolation between the ingress tier and the signing tier.** The signing tier (payout workers) must be placed on a separate network segment with no direct ingress routes; egress-only rules limited to blockchain RPC and Kafka; secure key injection via vaults (Ansible Vault, HashiCorp Vault, AWS Secrets Manager, etc.); and additional controls such as network policies, separate VPCs/VNets, or air-gapped environments depending on asset value.
+>
+> **Note on Redis host port 6380:** Redis is published on host port `6380` for local debugging (e.g., `redis-cli -p 6380`). No authentication is configured on this debug port. It should be removed or firewalled in any non-local deployment.

@@ -6,7 +6,11 @@
   <title>DiceTilt — Provably Fair Dice</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&family=Rubik:wght@400;700;800&family=Staatliches&display=swap" rel="stylesheet">
-  <script src="https://cdn.jsdelivr.net/npm/ethers@6.11.0/dist/ethers.umd.min.js"></script>
+  <!-- Fix #14 — SRI hash locks this CDN script to the exact known-good build.
+       If the CDN serves a tampered file the browser refuses to execute it. -->
+  <script src="https://cdn.jsdelivr.net/npm/ethers@6.11.0/dist/ethers.umd.min.js"
+          integrity="sha384-m11WjBOwSWmjpJBEx5ut5ptUgN2T6X+Qenqk8HEc+FhisdpgXqVn8p7nc2xXxLbf"
+          crossorigin="anonymous"></script>
   <style>
     *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -119,7 +123,7 @@
     }
     @keyframes marqueeScroll {
       0%   { transform: translateX(0); }
-      100% { transform: translateX(-50%); }
+      100% { transform: translateX(-25%); }
     }
 
     /* ── LOADING ─────────────────────────────────────────────── */
@@ -461,13 +465,24 @@
     }
     .btn-withdraw:hover:not(:disabled) { background: rgba(239,68,68,0.14); border-color: rgba(239,68,68,0.4); }
     .btn-withdraw:disabled { opacity: 0.38; cursor: not-allowed; }
+    @keyframes dw-spin { to { transform: rotate(360deg); } }
     .dw-status {
       min-height: 36px; font-size: 0.7rem; padding: 8px 10px;
       border-radius: 6px; background: var(--bg); border: 1px solid var(--border);
       color: var(--text3); word-break: break-all; line-height: 1.5;
     }
-    .dw-status.ok  { color: var(--win);  border-color: rgba(34,197,94,0.2); }
-    .dw-status.err { color: var(--loss); border-color: rgba(239,68,68,0.2); }
+    .dw-status.ok      { color: var(--win);  border-color: rgba(34,197,94,0.2); background: rgba(34,197,94,0.06); }
+    .dw-status.err     { color: var(--loss); border-color: rgba(239,68,68,0.2); }
+    .dw-status.pending {
+      background: rgba(120,120,140,0.08); border-color: rgba(120,120,140,0.25);
+      color: var(--text3); display: flex; align-items: center; gap: 8px;
+    }
+    .dw-status.pending::before {
+      content: ''; display: inline-block; flex-shrink: 0;
+      width: 12px; height: 12px;
+      border: 2px solid rgba(150,150,160,0.3); border-top-color: var(--text3);
+      border-radius: 50%; animation: dw-spin 0.75s linear infinite;
+    }
 
     /* ── PROVABLY FAIR PANEL ─────────────────────────────────── */
     .pf-panel {
@@ -644,17 +659,29 @@
 <div class="marquee-strip" aria-hidden="true">
   <div class="marquee-inner">
     <span class="marquee-item">🐒 DICETILT</span>
-    <span class="marquee-item">· PROVABLY FAIR ·</span>
-    <span class="marquee-item">🎲 CRYPTO DICE ·</span>
-    <span class="marquee-item">1% HOUSE EDGE ·</span>
-    <span class="marquee-item">🐒 SOVEREIGN WEB3 ·</span>
-    <span class="marquee-item">· ROLL ON-CHAIN ·</span>
+    <span class="marquee-item">THE 946K</span>
+    <span class="marquee-item">NO GAMBLE NO FUTURE ·</span>
+    <span class="marquee-item">Señor Angle ·</span>
+    <span class="marquee-item">PLAN B IS PLANS A, C, AND D</span>
+    <span class="marquee-item">ON YOUR BIKE</span>
     <span class="marquee-item">🐒 DICETILT</span>
-    <span class="marquee-item">· PROVABLY FAIR ·</span>
-    <span class="marquee-item">🎲 CRYPTO DICE ·</span>
-    <span class="marquee-item">1% HOUSE EDGE ·</span>
-    <span class="marquee-item">🐒 SOVEREIGN WEB3 ·</span>
-    <span class="marquee-item">· ROLL ON-CHAIN ·</span>
+    <span class="marquee-item">THE 946K</span>
+    <span class="marquee-item">NO GAMBLE NO FUTURE ·</span>
+    <span class="marquee-item">Señor Angle ·</span>
+    <span class="marquee-item">PLAN B IS PLANS A, C, AND D</span>
+    <span class="marquee-item">ON YOUR BIKE</span>
+    <span class="marquee-item">🐒 DICETILT</span>
+    <span class="marquee-item">THE 946K</span>
+    <span class="marquee-item">NO GAMBLE NO FUTURE ·</span>
+    <span class="marquee-item">Señor Angle ·</span>
+    <span class="marquee-item">PLAN B IS PLANS A, C, AND D</span>
+    <span class="marquee-item">ON YOUR BIKE</span>
+    <span class="marquee-item">🐒 DICETILT</span>
+    <span class="marquee-item">THE 946K</span>
+    <span class="marquee-item">NO GAMBLE NO FUTURE ·</span>
+    <span class="marquee-item">Señor Angle ·</span>
+    <span class="marquee-item">PLAN B IS PLANS A, C, AND D</span>
+    <span class="marquee-item">ON YOUR BIKE</span>
   </div>
 </div>
 
@@ -823,17 +850,20 @@
 <script>
 (async function() {
   const API = location.origin;
-  let ws, jwt, userId, wallet;
+  let ws, jwt, userId, wallet, sessionRevoked = false;
   let selectedChain = 'ethereum', selectedCurrency = 'ETH';
   let clientSeed = Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2,'0')).join('');
   let betHistory = [];
   let rolling = false;
+  let dwBusy  = false;
+  let betPending = false;
   let depositPending = false;
   let depositFallbackTimer = null;
   let depositChain = '';
   let depositCurrency = '';
   let withdrawPending = false;
   let scrambleInterval = null;
+  let pendingBetPreBalance = null;  // { chain, currency, balance } — restored on bet rejection
 
   document.getElementById('pf-client-seed').value = clientSeed;
 
@@ -891,7 +921,7 @@
   }
 
   // Deceleration + final snap: 6 frames with increasing delays, last frame = real result
-  function animateResultSettle(result, isWin, label) {
+  function animateResultSettle(result, isWin, label, onSettled) {
     stopRollAnimation();
     const display = document.getElementById('result-display');
     const delays  = [95, 150, 230, 340, 470, 640]; // ms between frames
@@ -912,6 +942,7 @@
           display.appendChild(ov);
           setTimeout(() => ov.remove(), 1000);
         }
+        if (onSettled) onSettled();
       } else {
         display.innerHTML = `
           <div class="roll-number scrambling">${num}</div>
@@ -940,32 +971,54 @@
   }
 
   // ── Auth ────────────────────────────────────────────────────────────────
-  const isDemo = new URLSearchParams(location.search).get('demo') === '1';
+  // Demo mode: only on localhost + ?demo=1 — prevents test mnemonic from being used on production.
+  const isLocalhost = () => ['localhost','127.0.0.1'].includes(location.hostname) || location.hostname.endsWith('.local');
+  const DEMO_MODE = isLocalhost() && new URLSearchParams(location.search).get('demo') === '1';
   try {
-    wallet = isDemo
-      ? ethers.HDNodeWallet.fromMnemonic(
-          ethers.Mnemonic.fromPhrase('test test test test test test test test test test test junk'),
-          "m/44'/60'/0'/0/1"
-        )
-      : ethers.Wallet.createRandom();
+    let isNewWallet = false;
+    if (DEMO_MODE) {
+      wallet = ethers.HDNodeWallet.fromMnemonic(
+        ethers.Mnemonic.fromPhrase('test test test test test test test test test test test junk'),
+        "m/44'/60'/0'/0/1"
+      );
+    } else {
+      const storedPk = localStorage.getItem('dt_wallet_pk');
+      if (storedPk) {
+        wallet = new ethers.Wallet(storedPk);
+      } else {
+        wallet = ethers.Wallet.createRandom();
+        localStorage.setItem('dt_wallet_pk', wallet.privateKey);
+        isNewWallet = true;
+      }
+    }
     const addr = wallet.address;
     const chRes = await fetch(`${API}/api/v1/auth/challenge`, { method: 'POST' });
     const { nonce } = await chRes.json();
-    const signature = await wallet.signMessage(addr);
+    // Fix #1 — sign the server-issued nonce, not the wallet address.
+    // This binds the signature to this specific one-time challenge and prevents replay.
+    const signature = await wallet.signMessage(nonce);
     const vRes = await fetch(`${API}/api/v1/auth/verify`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ walletAddress: addr, signature }),
+      body: JSON.stringify({ walletAddress: addr, signature, nonce }),
     });
     const data = await vRes.json();
     jwt = data.token;
     const parts = jwt.split('.');
     if (parts.length !== 3) throw new Error('Invalid token format');
     userId = JSON.parse(atob(parts[1])).userId;
-    if (isDemo) {
+    if (DEMO_MODE) {
       document.getElementById('demo-banner').style.display = 'flex';
       document.getElementById('demo-wallet-addr').textContent =
         wallet.address.slice(0, 6) + '…' + wallet.address.slice(-4);
+    }
+    // Fund new localhost wallets from Hardhat #0 so deposits work immediately.
+    if (isNewWallet) {
+      fetch(`${API}/api/v1/dev/faucet`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ address: addr, amount: 10 }),
+      }).catch(() => {}); // fire-and-forget — non-critical for auth flow
     }
   } catch (e) {
     document.getElementById('loading').innerHTML =
@@ -987,24 +1040,37 @@
 
   // ── WebSocket ───────────────────────────────────────────────────────────
   function connectWs() {
-    ws = new WebSocket(`ws://${location.host}/ws?token=${jwt}`);
+    // Fix #8 — do not pass the JWT in the URL query string.
+    // URL tokens appear in Nginx access logs and browser history.
+    // Auth happens in the first WebSocket frame instead.
+    ws = new WebSocket(`ws://${location.host}/ws`);
     ws.onopen = () => {
-      document.getElementById('ws-status').textContent = '● Connected';
-      document.getElementById('ws-status').className   = 'connected';
-      document.getElementById('loading').style.display    = 'none';
-      document.getElementById('game-floor').style.display = 'block';
-      setMascot('idle');
-      fetchPfStatus();
-      fetchBalances();
+      ws.send(JSON.stringify({ type: 'AUTH', token: jwt }));
     };
     ws.onclose = () => {
       document.getElementById('ws-status').textContent = '● Disconnected';
       document.getElementById('ws-status').className   = 'disconnected';
-      setTimeout(connectWs, 2000);
+      // Do not reconnect if the server explicitly revoked this session.
+      if (!sessionRevoked) setTimeout(connectWs, 2000);
     };
     ws.onmessage = (e) => {
       const msg = JSON.parse(e.data);
-      if      (msg.type === 'BET_RESULT')          handleBetResult(msg);
+      if (msg.type === 'AUTH_OK') {
+        // Fix #8 — reveal the game floor only after the server confirms auth.
+        document.getElementById('ws-status').textContent = '● Connected';
+        document.getElementById('ws-status').className   = 'connected';
+        document.getElementById('loading').style.display    = 'none';
+        document.getElementById('game-floor').style.display = 'block';
+        setMascot('idle');
+        fetchPfStatus();
+        fetchBalances();
+      }
+      else if (msg.type === 'SESSION_REVOKED') {
+        sessionRevoked = true;
+        document.getElementById('ws-status').textContent = '● Session expired';
+        document.getElementById('ws-status').className   = 'disconnected';
+      }
+      else if (msg.type === 'BET_RESULT')          handleBetResult(msg);
       else if (msg.type === 'BALANCE_UPDATE') {
         updateBalance(msg.chain, msg.currency, msg.balance);
         if (depositPending && msg.chain === depositChain && msg.currency === depositCurrency) {
@@ -1051,16 +1117,17 @@
   // ── Bet result ──────────────────────────────────────────────────────────
   function handleBetResult(msg) {
     rolling = false;
-    document.getElementById('roll-btn').disabled = false;
-
+    pendingBetPreBalance = null;  // bet succeeded — no restore needed
+    // Keep betPending=true (buttons disabled) until the settle animation
+    // finishes and the new balance is visible — then re-enable.
     const isWin = msg.payoutAmount > 0;
     const label = `${isWin ? `WIN +${msg.payoutAmount.toFixed(4)}` : 'LOSS'} · ${msg.direction} ${msg.target} · ${msg.multiplier}x`;
-    animateResultSettle(msg.gameResult, isWin, label);
-
-    // Data updates — immediate (not deferred)
-    // msg.newBalance is post-deduct but pre-credit. Adding payoutAmount gives the
-    // true settled balance (payoutAmount is 0 on losses so this is always correct).
-    updateBalance(msg.chain, msg.currency, msg.newBalance + msg.payoutAmount);
+    const settledBalance = msg.newBalance + msg.payoutAmount;
+    animateResultSettle(msg.gameResult, isWin, label, () => {
+      updateBalance(msg.chain, msg.currency, settledBalance);
+      betPending = false;
+      maybeClearBusy();
+    });
     document.getElementById('pf-nonce').textContent   = msg.nonce;
     document.getElementById('latency-display').textContent = `${(performance.now() - window._betSentAt).toFixed(1)} ms`;
 
@@ -1081,8 +1148,13 @@
 
   function handleError(msg) {
     rolling = false;
+    betPending = false;
     stopRollAnimation();
-    document.getElementById('roll-btn').disabled = false;
+    maybeClearBusy();
+    if (pendingBetPreBalance) {
+      updateBalance(pendingBetPreBalance.chain, pendingBetPreBalance.currency, pendingBetPreBalance.balance);
+      pendingBetPreBalance = null;
+    }
     const display = document.getElementById('result-display');
     display.className = 'result-display loss-state';
     display.innerHTML = `<div style="color:var(--loss);font-family:'Rubik',sans-serif;font-weight:700;">${msg.code}: ${msg.message}</div>`;
@@ -1093,7 +1165,15 @@
   document.getElementById('roll-btn').addEventListener('click', () => {
     if (rolling || ws.readyState !== 1) return;
     rolling = true;
-    document.getElementById('roll-btn').disabled = true;
+    betPending = true;
+    setDwBusy(true);
+    // Immediately reflect the escrow deduction — server has atomically moved
+    // wager from balance to escrowed; show it now rather than waiting for BET_RESULT.
+    const wager = parseFloat(document.getElementById('wager-input').value) || 0;
+    const balEl = document.getElementById(`bal-${selectedChain}-${selectedCurrency}`);
+    const currentBalance = parseFloat(balEl?.textContent ?? '0');
+    pendingBetPreBalance = { chain: selectedChain, currency: selectedCurrency, balance: currentBalance };
+    updateBalance(selectedChain, selectedCurrency, currentBalance - wager);
     document.getElementById('pf-server-gamehash').classList.add('stale');
     document.getElementById('pf-client-gamehash').classList.add('stale');
     clientSeed = document.getElementById('pf-client-seed').value;
@@ -1231,11 +1311,23 @@
     el.className   = 'dw-status' + (type ? ' ' + type : '');
   }
   function getDwAmount() { return parseFloat(document.getElementById('dw-amount').value) || 0; }
+  // Mirrors DB chk_deposits_amount_positive (amount > 0)
+  function validateDwAmount() {
+    const amount = getDwAmount();
+    if (!amount || amount <= 0) return { valid: false, msg: 'Amount must be greater than 0.' };
+    return { valid: true };
+  }
   function setDwBusy(busy) {
+    dwBusy = busy;
     document.getElementById('deposit-btn').disabled  = busy;
     document.getElementById('withdraw-btn').disabled = busy;
+    if (busy) {
+      document.getElementById('roll-btn').disabled = true;
+    } else if (!rolling) {
+      document.getElementById('roll-btn').disabled = false;
+    }
   }
-  function maybeClearBusy() { if (!depositPending && !withdrawPending) setDwBusy(false); }
+  function maybeClearBusy() { if (!betPending && !depositPending && !withdrawPending) setDwBusy(false); }
 
   document.querySelectorAll('.dw-quick-amounts button').forEach(btn => {
     btn.addEventListener('click', () => { document.getElementById('dw-amount').value = btn.dataset.amount; });
@@ -1244,14 +1336,15 @@
   // ── Deposit ─────────────────────────────────────────────────────────────
   // Balance is ONLY updated when BALANCE_UPDATE arrives via WebSocket (backend confirmed).
   document.getElementById('deposit-btn').addEventListener('click', async () => {
+    const v = validateDwAmount();
+    if (!v.valid) { setDwStatus(v.msg, 'err'); return; }
     const amount = getDwAmount();
-    if (!amount || amount <= 0) { setDwStatus('Enter a valid amount.', 'err'); return; }
     if (selectedCurrency !== 'ETH') {
       setDwStatus('On-chain deposit only supported for ETH in this demo.', 'err'); return;
     }
     try {
       setDwBusy(true);
-      setDwStatus('Fetching EVM config...');
+      setDwStatus('Fetching EVM config…', 'pending');
       const cfgRes = await fetch(`${API}/api/v1/config`);
       if (!cfgRes.ok) throw new Error('Config endpoint returned ' + cfgRes.status);
       const cfg = await cfgRes.json();
@@ -1259,7 +1352,7 @@
         setDwStatus('EVM not ready. Start the evm-node container.', 'err');
         maybeClearBusy(); return;
       }
-      setDwStatus('Sending ' + amount + ' ' + selectedCurrency + '...');
+      setDwStatus('Sending ' + amount + ' ' + selectedCurrency + '…', 'pending');
       const provider = new ethers.JsonRpcProvider(cfg.evmRpcUrl);
       // Fast polling so tx.wait() resolves quickly; BALANCE_UPDATE via WS is authoritative.
       provider.pollingInterval = 250;
@@ -1273,10 +1366,10 @@
       depositPending  = true;
       depositChain    = selectedChain;
       depositCurrency = selectedCurrency;
-      setDwStatus('Sent! Waiting for confirmation...');
+      setDwStatus('Sent! Waiting for confirmation…', 'pending');
       await tx.wait();
       if (depositPending) {
-        setDwStatus('Transaction mined — awaiting ledger update…', 'ok');
+        setDwStatus('Transaction mined — awaiting ledger update…', 'pending');
         depositFallbackTimer = setTimeout(() => {
           if (depositPending) {
             depositPending = false;
@@ -1294,10 +1387,11 @@
 
   // ── Withdraw ─────────────────────────────────────────────────────────────
   document.getElementById('withdraw-btn').addEventListener('click', async () => {
+    const v = validateDwAmount();
+    if (!v.valid) { setDwStatus(v.msg, 'err'); return; }
     const amount = getDwAmount();
-    if (!amount || amount <= 0) { setDwStatus('Enter a valid amount.', 'err'); return; }
     setDwBusy(true);
-    setDwStatus('Requesting withdrawal of ' + amount + ' ' + selectedCurrency + '...');
+    setDwStatus('Requesting withdrawal of ' + amount + ' ' + selectedCurrency + '…', 'pending');
     try {
       const res = await fetch(`${API}/api/v1/withdraw`, {
         method:  'POST',
@@ -1308,7 +1402,7 @@
       if (res.ok) {
         withdrawPending = true;
         await fetchBalances();
-        setDwStatus('Withdrawal initiated — balance deducted. Awaiting on-chain payout…', 'ok');
+        setDwStatus('Withdrawal initiated — balance deducted. Awaiting on-chain payout…', 'pending');
         // Safety net: re-enable after 60s if WITHDRAWAL_COMPLETED never arrives
         setTimeout(() => {
           if (withdrawPending) {

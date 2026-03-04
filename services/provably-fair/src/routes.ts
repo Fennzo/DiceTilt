@@ -1,6 +1,8 @@
 import { Router, type Request, type Response, type Router as RouterType } from 'express';
 import { PfCalculateRequestSchema, PfRotateSeedRequestSchema } from '@dicetilt/shared-types';
-import { generateServerSeed, computeCommitment, computeGameResult } from './crypto.service.js';
+import { generateServerSeed, computeCommitment } from './crypto.service.js';
+import { pool } from './pool.js';
+import type { WorkerInput } from './worker.js';
 
 const router: RouterType = Router();
 
@@ -20,14 +22,15 @@ router.post('/api/pf/generate-seed', authGuard, (_req: Request, res: Response) =
   res.json({ serverSeed, commitment });
 });
 
-router.post('/api/pf/calculate', authGuard, (req: Request, res: Response) => {
+router.post('/api/pf/calculate', authGuard, async (req: Request, res: Response) => {
   const parsed = PfCalculateRequestSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: 'Invalid input', details: parsed.error.issues });
     return;
   }
   const { clientSeed, nonce, serverSeed } = parsed.data;
-  const result = computeGameResult(serverSeed, clientSeed, nonce);
+  const input: WorkerInput = { serverSeed, clientSeed, nonce };
+  const result = await pool.run(input) as { gameResult: number; gameHash: string };
   res.json(result);
 });
 

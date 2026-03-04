@@ -20,6 +20,7 @@ export type {
   ErrorMessage,
   PongMessage,
   SessionRevokedMessage,
+  AuthOkMessage,
   ServerMessage,
 } from './websocket.js';
 
@@ -56,5 +57,6 @@ export {
   WithdrawRequestSchema,
   PfCalculateRequestSchema,
   PfRotateSeedRequestSchema,
+  AuthMessageSchema,
 } from './validation.js';
 export type { BetRequest, ClientMessage } from './validation.js';

@@ -76,14 +76,13 @@ export default function (data) {
     return;
   }
 
-  const params = { headers: { Authorization: `Bearer ${token}` } };
-
-  const res = ws.connect(WS_URL, params, function (socket) {
+  const res = ws.connect(WS_URL, {}, function (socket) {
     let betSentAt = 0;
-    let connected = false;
+    let authenticated = false;
 
+    // Phase 8: auth via first WS frame, not URL token or HTTP header
     socket.on('open', () => {
-      connected = true;
+      socket.send(JSON.stringify({ type: 'AUTH', token }));
     });
 
     socket.on('message', (raw) => {
@@ -91,6 +90,13 @@ export default function (data) {
       try {
         msg = JSON.parse(raw);
       } catch {
+        return;
+      }
+
+      if (msg.type === 'AUTH_OK') {
+        authenticated = true;
+        const staggerMs = ((__VU - 1) % 20 + 1) * 10;
+        socket.setTimeout(() => { sendBet(); }, staggerMs);
         return;
       }
 
@@ -125,7 +131,7 @@ export default function (data) {
     let pendingBet = false;
 
     function sendBet() {
-      if (!connected || pendingBet) return;
+      if (!authenticated || pendingBet) return;
       pendingBet = true;
       betSentAt = Date.now();
       socket.send(JSON.stringify({
@@ -138,10 +144,6 @@ export default function (data) {
         direction: 'over',
       }));
     }
-
-    // Stagger initial bets: VU 1-100 start between 10ms and 200ms
-    const staggerMs = ((__VU - 1) % 20 + 1) * 10;
-    socket.setTimeout(() => { sendBet(); }, staggerMs);
 
     // Keep socket alive for the scenario duration minus buffer
     socket.setTimeout(() => { socket.close(); }, 55000);

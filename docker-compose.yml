@@ -118,6 +118,9 @@ services:
     environment:
       PF_PORT: 3001
       PF_AUTH_TOKEN: ${PF_AUTH_TOKEN}
+      LOG_LEVEL: "info"
+    volumes:
+      - ./logs/provably-fair:/app/logs
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:3001/health || exit 1"]
       interval: 10s
@@ -133,6 +136,7 @@ services:
       dockerfile: services/api-gateway/Dockerfile
     volumes:
       - treasury-addr:/shared:ro
+      - ./logs/api-gateway:/app/logs
     environment:
       API_PORT: 3000
       JWT_SECRET: ${JWT_SECRET}
@@ -146,7 +150,9 @@ services:
       # TREASURY_CONTRACT_ADDRESS is intentionally NOT set here.
       # api-gateway reads it from /shared/treasury-addr (same volume as evm-listener)
       # so both services always reference the same deployed contract.
-      TEST_MODE: "false"
+      TEST_MODE: "${TEST_MODE:-false}"
+      LOG_LEVEL: "info"
+      CLUSTER_WORKERS: "4"
     depends_on:
       postgres:
         condition: service_healthy
@@ -194,6 +200,7 @@ services:
     image: prom/prometheus:latest
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
     depends_on:
       api-gateway:
         condition: service_healthy
@@ -244,8 +251,10 @@ services:
       EVM_RPC_WS_URL: ws://evm-node:8545
       KAFKA_BROKERS: kafka:29092
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      LOG_LEVEL: "info"
     volumes:
       - treasury-addr:/shared:ro
+      - ./logs/evm-listener:/app/logs
     depends_on:
       postgres:
         condition: service_healthy
@@ -272,8 +281,10 @@ services:
       KAFKA_BROKERS: kafka:29092
       EVM_RPC_URL: http://evm-node:8545
       TREASURY_OWNER_PRIVATE_KEY: ${TREASURY_OWNER_PRIVATE_KEY}
+      LOG_LEVEL: "info"
     volumes:
       - treasury-addr:/shared:ro
+      - ./logs/evm-payout-worker:/app/logs
     depends_on:
       kafka-init:
         condition: service_completed_successfully
@@ -299,6 +310,9 @@ services:
       LEDGER_KAFKA_GROUP_ID: ledger-persistent-group
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       REDIS_URI: redis://redis:6379
+      LOG_LEVEL: "info"
+    volumes:
+      - ./logs/ledger-consumer:/app/logs
     depends_on:
       postgres:
         condition: service_healthy
