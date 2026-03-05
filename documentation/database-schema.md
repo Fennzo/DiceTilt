@@ -394,7 +394,7 @@ Audit and idempotency table for `WithdrawalCompleted` Kafka events. One row is i
 >
 > **Note on `deposits.tx_hash`:** The `UNIQUE` constraint on `tx_hash` already provides an implicit index that the Ledger Consumer's `ON CONFLICT (tx_hash)` uses for deduplication lookups. The explicit `idx_deposits_user_id` is separate and covers user-scoped queries only.
 >
-> **Note on `withdrawals.tx_hash`:** Unlike deposits, withdrawals use `UNIQUE (tx_hash, chain)` for **per-chain** deduplication — the same `tx_hash` can exist on different chains (EVM vs Solana have separate address spaces). The Ledger Consumer must use `ON CONFLICT (tx_hash, chain) DO NOTHING` to match this constraint. Deposits use `UNIQUE (tx_hash)` for **cross-chain** deduplication (a single tx_hash is globally unique across all chains); deposits therefore use `ON CONFLICT (tx_hash) DO NOTHING`.
+> **Note on `withdrawals.tx_hash`:** Withdrawals use `UNIQUE (tx_hash)` — the same single-column constraint as deposits (`init.sql:144`). EVM and Solana transaction hashes are formatted differently and cannot collide in practice, so a cross-chain unique constraint is sufficient for both tables. The Ledger Consumer uses `ON CONFLICT (tx_hash) DO NOTHING` for both deposits and withdrawals.
 
 ---
 

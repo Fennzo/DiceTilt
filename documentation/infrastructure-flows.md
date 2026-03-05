@@ -27,21 +27,21 @@ No TypeScript service may attempt to boot until its data/messaging dependencies 
 
 ```mermaid
 flowchart TD
-    PG["PostgreSQL\nHealthcheck: pg_isready"]
-    Redis["Redis\nHealthcheck: redis-cli ping"]
-    Kafka["Kafka KRaft\nHealthcheck: kafka-topics.sh list"]
-    KafkaInit["Kafka Init Container\ninit-kafka.sh — creates all topics"]
-    Nginx["Nginx\nHealthcheck: curl /health"]
+    PG["PostgreSQL — Healthcheck: pg_isready"]
+    Redis["Redis — Healthcheck: redis-cli ping"]
+    Kafka["Kafka KRaft — Healthcheck: kafka-topics.sh list"]
+    KafkaInit["Kafka Init Container — init-kafka.sh — creates all topics"]
+    Nginx["Nginx — Healthcheck: curl /health"]
     PF["PF Worker"]
     API["API Gateway"]
     Ledger["Ledger Consumer"]
-    EVMDeploy["evm-deploy\ndeploy Treasury.sol + fund 100 ETH\noutputs TREASURY_CONTRACT_ADDRESS"]
+    EVMDeploy["evm-deploy — deploy Treasury.sol + fund 100 ETH — outputs TREASURY_CONTRACT_ADDRESS"]
     EVMListen["EVM Listener"]
     SolListen["Solana Listener"]
     EVMPay["EVM Payout Worker"]
     SolPay["Solana Payout Worker"]
-    Anvil["Hardhat/Anvil\nHealthcheck: eth_blockNumber JSON-RPC"]
-    SolVal["Solana Validator\nHealthcheck: getHealth RPC"]
+    Anvil["Hardhat/Anvil — Healthcheck: eth_blockNumber JSON-RPC"]
+    SolVal["Solana Validator — Healthcheck: getHealth RPC"]
     Prom["Prometheus"]
     Grafana["Grafana"]
 
@@ -126,12 +126,12 @@ sequenceDiagram
     Anvil-->>EVMDeploy: contract deployed at 0x5FbDB...
     EVMDeploy->>Anvil: deployer.sendTransaction({ to: treasury, value: 100 ETH })
     Anvil-->>EVMDeploy: fund tx confirmed
-    EVMDeploy->>DC: stdout last line = "0x5FbDB..." (parsed by evm-deploy.sh via tail -1)
-    Note over EVMDeploy: TREASURY_CONTRACT_ADDRESS env var written; container exits 0
+    EVMDeploy->>DC: stdout last line = '0x5FbDB...' (parsed by evm-deploy.sh via tail -1)
+    Note over EVMDeploy: TREASURY_CONTRACT_ADDRESS written — container exits 0
 
     DC->>SolVal: start solana-test-validator (multi-stage: Rust compile → validator boot)
     SolVal->>SolVal: deploy Anchor Treasury program --bpf-program
-    SolVal-->>DC: healthcheck: getHealth → "ok"
+    SolVal-->>DC: healthcheck: getHealth → 'ok'
 
     DC->>PF: start PF Worker (depends_on: none — stateless, no external connections)
     DC->>API: start API Gateway (depends_on: PG healthy, Redis healthy, Kafka init complete, PF healthy)
@@ -208,10 +208,10 @@ sequenceDiagram
     Note over LC: All retries exhausted OR unrecoverable error
     LC->>DLQ: produce DeadLetterMessage { original_payload, error, retry_count, failed_at }
     LC->>Kafka: commitOffsets for original message (avoid infinite re-delivery loop)
-    LC->>Prom: increment dicetilt_kafka_dlq_messages_total{source_topic="BetResolved"}
+    LC->>Prom: increment dicetilt_kafka_dlq_messages_total{source_topic='BetResolved'}
 
     Prom->>Alert: scrape detects DLQ count > 0
-    Alert->>Grafana: alert fires on "Security & Integrity" dashboard row
+    Alert->>Grafana: alert fires on Security and Integrity dashboard row
     Alert->>Alert: EDA rulebook triggers notification / auto-remediation
 
     Note over LC: Consumer continues processing next messages — does NOT crash
@@ -298,13 +298,15 @@ sequenceDiagram
     Grafana->>Grafana: import dashboard — 4 rows, 20+ panels provisioned
 
     Note over Grafana: Dashboard available at localhost:3001 immediately on boot
-    Note over Grafana: Zero manual steps required — no clicking "Add datasource" or "Import dashboard"
+    Note over Grafana: Zero manual steps required — no clicking Add datasource or Import dashboard
     Note over Grafana: GF_SECURITY_ALLOW_EMBEDDING=true + GF_AUTH_ANONYMOUS_ENABLED=true → iframe in dashboard.html loads without login
 ```
 
 ---
 
 ## Flow 7 — Event-Driven Ansible (EDA): Kafka Broker Remediation
+
+> **⚠️ Architectural design only — not implemented in the PoC.** No EDA controller, Alertmanager, or Ansible playbook exists in `docker-compose.yml`. This flow documents the intended production remediation architecture.
 
 When Prometheus detects a Kafka broker health degradation, an alert fires. The EDA controller receives the alert and automatically executes a remediation playbook to restart the broker.
 
@@ -323,10 +325,10 @@ sequenceDiagram
     KafkaExp-->>Prom: kafka_broker_state = 0 (not active)
 
     Prom->>Prom: evaluate alert rule: kafka_broker_state == 0 for > 30s
-    Prom->>AM: fire alert: KafkaBrokerDown { severity: critical, broker: "kafka:29092" }
+    Prom->>AM: fire alert: KafkaBrokerDown { severity: critical, broker: 'kafka:29092' }
     AM->>EDA: POST /alerts (ansible.eda.alertmanager source plugin listening)
 
-    EDA->>EDA: evaluate rulebook condition: alert.name == "KafkaBrokerDown"
+    EDA->>EDA: evaluate rulebook condition: alert.name == 'KafkaBrokerDown'
     EDA->>Ansible: trigger kafka_health.yml playbook
     Ansible->>DC: docker restart kafka
     DC->>Kafka: container restarts — KRaft storage already formatted

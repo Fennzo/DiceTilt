@@ -50,8 +50,8 @@ sequenceDiagram
     B->>N: POST /api/v1/auth/challenge
     N->>API: forward
     API->>API: generate cryptographically random nonce (uuid v4)
-    API-->>N: { nonce: "a3f8..." }
-    N-->>B: { nonce: "a3f8..." }
+    API-->>N: { nonce: 'a3f8...' }
+    N-->>B: { nonce: 'a3f8...' }
 
     B->>B: burnerWallet.signMessage(EIP-712 typed data including nonce)
     Note over B: Signature proves wallet ownership without any transaction
@@ -68,16 +68,16 @@ sequenceDiagram
 
         API->>API: INSERT INTO users (id, active_server_seed)
         API->>API: INSERT INTO wallets (user_id, ethereum, ETH, balance=10, wallet_address) — default PoC balance, wallet_address from signed payload
-        API->>API: INSERT INTO wallets (user_id, solana, SOL, balance=10, wallet_address) — both chains; Solana address placeholder until user connects Solana keypair
-        API->>Redis: SET session:{userId} "active" EX 86400
-        API->>Redis: SET user:{userId}:nonce:ethereum:ETH "0" (and solana:SOL) — nonce lives in Redis
-        API->>Redis: SET user:{userId}:balance:ethereum:ETH "10" (and solana:SOL) — default balance
+        API->>API: INSERT INTO wallets (user_id, solana, SOL, balance=10, wallet_address) — both chains, Solana address placeholder until user connects Solana keypair
+        API->>Redis: SET session:{userId} 'active' EX 86400
+        API->>Redis: SET user:{userId}:nonce:ethereum:ETH '0' (and solana:SOL) — nonce lives in Redis
+        API->>Redis: SET user:{userId}:balance:ethereum:ETH '10' (and solana:SOL) — default balance
         API->>API: jwt.sign({ userId, walletAddress }) → JWT
 
-        API-->>B: { token: "eyJ..." }
+        API-->>B: { token: 'eyJ...' }
         Note over B: Store JWT in memory (not localStorage — XSS risk)
     else Signature invalid
-        API-->>B: HTTP 401 { error: "INVALID_SIGNATURE" }
+        API-->>B: HTTP 401 { error: 'INVALID_SIGNATURE' }
     end
 ```
 
@@ -99,32 +99,32 @@ sequenceDiagram
     N->>API: forward WebSocket upgrade request
     API-->>B: HTTP 101 Switching Protocols — raw socket established
 
-    Note over API: 10-second auth timeout — no PONG/other frames until AUTH_OK; timeout → close(1008) + dicetilt_auth_failures_total
+    Note over API: 10-second auth timeout — no PONG/other frames until AUTH_OK, timeout → close(1008) + dicetilt_auth_failures_total
     Note over API: maxPayload = 64 KB (cap incoming frame size — default 100 MB is unsafe)
 
-    B->>API: WS send → { type: "AUTH", token: "eyJ..." }  ← first frame (must arrive within 10s)
+    B->>API: WS send → { type: 'AUTH', token: 'eyJ...' }  ← first frame (must arrive within 10s)
     API->>API: AuthMessageSchema.parse(frame) — validate shape
     API->>API: jwt.verify(token) → { userId, walletAddress }
 
     alt First frame is not AUTH (e.g. BET_REQUEST, PING), or JWT expired / malformed
         Note over API: Increment dicetilt_auth_failures_total
-        API-->>B: ws.close(1008, "first frame must be AUTH" | "invalid token")
+        API-->>B: ws.close(1008, 'first frame must be AUTH' | 'invalid token')
         Note over B: Connection closed — client must re-obtain a JWT and retry
     else JWT valid
         API->>Redis: GET session:{userId}
 
         alt Session revoked (key missing or expired)
             Note over API: Increment dicetilt_auth_failures_total
-            API->>B: WS push → { type: "SESSION_REVOKED" }
+            API->>B: WS push → { type: 'SESSION_REVOKED' }
             API->>API: ws.close()
-        else Session active ("active" value returned)
+        else Session active ('active' value returned)
             Note over API: Enforce per-user connection cap (MAX_CONNECTIONS_PER_USER = 5)
             alt User already has 5 open sockets
                 Note over API: Increment dicetilt_auth_failures_total
-                API-->>B: ws.close(1008, "connection limit reached")
+                API-->>B: ws.close(1008, 'connection limit reached')
             else Under limit
                 API->>API: register WebSocket in memory map (userId → Set<WebSocket>)
-                API->>B: WS push → { type: "AUTH_OK" }
+                API->>B: WS push → { type: 'AUTH_OK' }
                 Note over B, API: Persistent bi-directional connection fully active
             end
         end
@@ -217,14 +217,14 @@ sequenceDiagram
     participant LC as Ledger Consumer
     participant PG as PostgreSQL
 
-    B->>N: WS send → { type: "BET_REQUEST", wagerAmount: 10, clientSeed: "abc123", chain: "ethereum", currency: "ETH", target: 50, direction: "under" }
+    B->>N: WS send → { type: 'BET_REQUEST', wagerAmount: 10, clientSeed: 'abc123', chain: 'ethereum', currency: 'ETH', target: 50, direction: 'under' }
     N->>API: route WebSocket frame
 
     API->>API: Zod.parse(frame) — validate all fields (wagerAmount > 0, target 2–98, direction, chain, currency, clientSeed ≤ 64 chars)
     API->>API: check Redis session:{userId} still active
 
     par Atomic balance deduct
-        API->>Redis: EVAL lua_balance_check_deduct(userId, "ethereum", "ETH", 10)
+        API->>Redis: EVAL lua_balance_check_deduct(userId, 'ethereum', 'ETH', 10)
         Note over Redis: Atomic: GET balance, assert >= wager, SET balance - wager, INCR nonce, return newBalance + nonce
         Redis-->>API: { success: true, newBalance: 90, nonce: 42 }
     and Fetch server seed
@@ -232,28 +232,28 @@ sequenceDiagram
     end
     Note over API: Promise.all resolves — balance deduct and seed fetch complete before PF call
 
-    API->>PF: POST /api/pf/calculate { clientSeed: "abc123", nonce: 42, serverSeed: "a3f8..." }
+    API->>PF: POST /api/pf/calculate { clientSeed: 'abc123', nonce: 42, serverSeed: 'a3f8...' }
     Note over PF: PF Worker is stateless — Gateway passes all inputs
-    PF->>PF: HMAC-SHA256(serverSeed + ":" + clientSeed + ":" + nonce)
+    PF->>PF: HMAC-SHA256(serverSeed + ':' + clientSeed + ':' + nonce)
     PF->>PF: gameResult = parseInt(hash.slice(0,8), 16) % 100 + 1  →  22
-    PF-->>API: { gameResult: 22, gameHash: "d4e8f..." }
+    PF-->>API: { gameResult: 22, gameHash: 'd4e8f...' }
 
     Note over API: direction="under", gameResult=22 < target=50 → WIN
-    API->>API: multiplier = 99 / (50 - 1) = 2.0204; payoutAmount = 10 * 2.0204 = 20.20
+    API->>API: multiplier = 99 / (50 - 1) = 2.0204, payoutAmount = 10 * 2.0204 = 20.20
 
     Note over API: settleBetAsync (lua_credit_payout) and produceBetResolved are fire-and-forget for latency SLO
     API--)Redis: EVAL lua_credit_payout (settleBetAsync) — retries up to creditMaxAttempts (default 3) on transient Redis errors
-    API--)Kafka: produce BetResolved { bet_id, user_id, chain, currency, wager, payout, result, hash, nonce, clientSeed } — .catch() logs KAFKA_PRODUCE_ERROR; no durable retry
+    API--)Kafka: produce BetResolved { bet_id, user_id, chain, currency, wager, payout, result, hash, nonce, clientSeed } — .catch() logs KAFKA_PRODUCE_ERROR, no durable retry
 
     Note over API: newBalance in WS message = 90 (post-deduct, PRE-credit — lua_credit_payout not yet applied)
-    API-->>N: WS send → { type: "BET_RESULT", betId, gameResult: 22, gameHash, nonce: 42, wagerAmount: 10, payoutAmount: 20.20, target: 50, direction: "under", multiplier: 2.0204, newBalance: 90, chain: "ethereum", currency: "ETH", timestamp }
+    API-->>N: WS send → { type: 'BET_RESULT', betId, gameResult: 22, gameHash, nonce: 42, wagerAmount: 10, payoutAmount: 20.20, target: 50, direction: 'under', multiplier: 2.0204, newBalance: 90, chain: 'ethereum', currency: 'ETH', timestamp }
     N-->>B: deliver WS frame
     Note over API,B: ← entire synchronous path above completes in <20ms
 
     Note over B: Frontend compensates for pre-credit newBalance:
     Note over B: displayedBalance = msg.newBalance + msg.payoutAmount = 90 + 20.20 = 110.20
     Note over B: (payoutAmount is 0 on a loss, so this formula is always correct)
-    B->>B: updateBalance("ethereum", "ETH", 110.20) — display win + correct balance
+    B->>B: updateBalance('ethereum', 'ETH', 110.20) — display win + correct balance
 
     Note over Kafka, PG: Async ACID settlement — independent of client response
     LC->>Kafka: consume BetResolved
@@ -353,11 +353,11 @@ sequenceDiagram
     participant B as Browser
     participant API as API Gateway
 
-    B->>API: WS → { type: "BET_REQUEST", wagerAmount: -5, clientSeed: "" }
-    API->>API: Zod.parse(frame) → ZodError: wagerAmount must be positive; clientSeed must not be empty
+    B->>API: WS → { type: 'BET_REQUEST', wagerAmount: -5, clientSeed: '' }
+    API->>API: Zod.parse(frame) → ZodError: wagerAmount must be positive, clientSeed must not be empty
 
     Note over API: Short-circuit. Redis, PF Worker, and Kafka are never touched.
-    API-->>B: WS → { type: "ERROR", code: "INVALID_PAYLOAD", message: "wagerAmount must be > 0" }
+    API-->>B: WS → { type: 'ERROR', code: 'INVALID_PAYLOAD', message: 'wagerAmount must be > 0' }
 ```
 
 ---

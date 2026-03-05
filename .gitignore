@@ -7,3 +7,10 @@ Thumbs.db
 claude-code-router/
 /logs/
 results/
+results/
+.claude/                                                                                                                                                                                                                
+.vscode/                                                                                                                                                                                                                
+.cursor/
+.mermaid-validate/
+scripts/validate-mermaid.js
+MASTER_PROMPT.md

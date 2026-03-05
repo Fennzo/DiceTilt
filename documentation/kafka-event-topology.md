@@ -14,8 +14,8 @@ flowchart LR
         API["API Gateway"]
         EVMListen["EVM Listener"]
         SolListen["Solana Listener"]
-        TradeRouter["Trade Router\n(stub — future)"]
-        LC_DLQ["Ledger Consumer\n(DLQ producer on failure)"]
+        TradeRouter["Trade Router (stub — future)"]
+        LC_DLQ["Ledger Consumer (DLQ producer on failure)"]
     end
 
     subgraph "Topics"
@@ -30,11 +30,11 @@ flowchart LR
     end
 
     subgraph "Consumers"
-        LC["Ledger Consumer\nGroup: ledger-persistent-group"]
-        EVMPay["EVM Payout Worker\nGroup: evm-payout-group"]
-        SolPay["Solana Payout Worker\nGroup: solana-payout-group"]
-        Audit["Manual Audit Process\nGroup: dlq-audit-group"]
-        LC_Future["Ledger Consumer\n(future — TradeExecuted)"]
+        LC["Ledger Consumer — Group: ledger-persistent-group"]
+        EVMPay["EVM Payout Worker — Group: evm-payout-group"]
+        SolPay["Solana Payout Worker — Group: solana-payout-group"]
+        Audit["Manual Audit Process — Group: dlq-audit-group"]
+        LC_Future["Ledger Consumer (future — TradeExecuted)"]
     end
 
     API -->|"acks:all · idempotent"| BRTopic
@@ -183,11 +183,11 @@ flowchart TD
     BRTopic["BetResolved"]
     DRTopic["DepositReceived"]
 
-    BRTopic --> LCGroup["Consumer Group:\nledger-persistent-group\n(Ledger Consumer)"]
+    BRTopic --> LCGroup["Consumer Group: ledger-persistent-group (Ledger Consumer)"]
     DRTopic --> LCGroup
 
-    WRTopic["WithdrawalRequested"] --> EVMGroup["Consumer Group:\nevm-payout-group\n(EVM Payout Worker)"]
-    WRTopic --> SolGroup["Consumer Group:\nsolana-payout-group\n(Solana Payout Worker)"]
+    WRTopic["WithdrawalRequested"] --> EVMGroup["Consumer Group: evm-payout-group (EVM Payout Worker)"]
+    WRTopic --> SolGroup["Consumer Group: solana-payout-group (Solana Payout Worker)"]
 
     EVMGroup -. "chain === 'ethereum'" .-> EVMProcess["Process withdrawal"]
     EVMGroup -. "chain === 'solana'" .-> EVMSkip["Skip (ignore)"]
@@ -287,7 +287,7 @@ await producer.send({
 
 ### Consumer Configuration
 
-The Ledger Consumer must use **`eachBatch`** (not `eachMessage`) to enable parallel DB inserts across users. Messages are grouped by `user_id`; each group is processed sequentially to preserve per-user ordering, but groups run in parallel via `Promise.all` (Constraint 24).
+The Ledger Consumer must use **`eachBatch`** to enable parallel DB inserts across users. Messages are grouped by `user_id`; each group is processed sequentially to preserve per-user ordering, but groups run in parallel via `Promise.all` (Constraint 24).
 
 ```typescript
 const consumer = kafka.consumer({
@@ -314,7 +314,7 @@ await consumer.run({
 
 | Setting | Value | Rationale |
 |---|---|---|
-| `eachBatch` (not `eachMessage`) | batch processing | Enables grouping by `user_id` and `Promise.all` across groups — parallel DB inserts for different users while preserving per-user order. Sequential `eachMessage` limits throughput. |
+| `eachBatch`| batch processing | Enables grouping by `user_id` and `Promise.all` across groups — parallel DB inserts for different users while preserving per-user order. Sequential `eachMessage` limits throughput. |
 | `autoCommit: false` | manual | Offsets are committed only after the Postgres insert succeeds. If the service crashes mid-insert, the message is re-delivered — protected by `ON CONFLICT DO NOTHING`. |
 | `maxWaitTimeInMs: 50` | 50ms | Low fetch wait time ensures the Ledger Consumer processes messages with minimal lag. Async settlement should not lag behind the game loop. |
 | `sessionTimeout: 30000` | 30s | Kafka considers the consumer dead after 30s without a heartbeat, triggering a rebalance. |

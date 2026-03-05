@@ -38,40 +38,40 @@ sequenceDiagram
     participant Redis as Redis
     participant API as API Gateway
 
-    Note over B: evm-deploy script pre-funded Treasury with 100 ETH; burnerWallet funded by Anvil
+    Note over B: evm-deploy script pre-funded Treasury with 100 ETH, burnerWallet funded by Anvil
 
     B->>Anvil: eth_sendTransaction → Treasury.deposit(amount) signed by burnerWallet
     Anvil->>TSol: execute deposit() — transfer ETH to contract
     TSol->>TSol: emit Deposit(playerAddress, amount, timestamp)
-    Anvil-->>B: tx receipt { status: 1, txHash: "0xabc..." }
+    Anvil-->>B: tx receipt { status: 1, txHash: '0xabc...' }
 
     Note over EL: Continuously listening via ethers.js contract.on('Deposit', ...)
-    EL->>EL: receive Deposit event { player: "0x...", amount: "1000000000000000000", block: 42 }
+    EL->>EL: receive Deposit event { player: '0x...', amount: '1000000000000000000', block: 42 }
     Note over EL: ethers.js v6 — txHash is nested on eventLog.log.transactionHash (NOT top-level)
 
     Note over EL: Layer 1 dedup — in-memory seenTxHashes Set
     EL->>EL: if seenTxHashes.has(txHash) → drop duplicate (ethers.js can re-fire on WS reconnect)
-    Note over EL: Layer 2 dedup — DB check (survives listener restart; Anvil replays all historical events on each new WS subscription)
+    Note over EL: Layer 2 dedup — DB check (survives listener restart, Anvil replays all historical events on each new WS subscription)
     EL->>PG: SELECT deposit_id FROM deposits WHERE tx_hash = '0xabc...'
     PG-->>EL: (0 rows) — not seen before
     EL->>EL: seenTxHashes.add(txHash)
 
     EL->>EL: derive userId from wallet_address lookup
-    EL->>Kafka: produce DepositReceived { chain: "ethereum", currency: "ETH", userId, amount: "1.0", txHash, blockNumber }
+    EL->>Kafka: produce DepositReceived { chain: 'ethereum', currency: 'ETH', userId, amount: '1.0', txHash, blockNumber }
     Note over EL: acks: 'all' — waits for all Kafka replicas to acknowledge
 
-    LC->>Kafka: consume DepositReceived (chain: "ethereum")
+    LC->>Kafka: consume DepositReceived (chain: 'ethereum')
     LC->>PG: INSERT INTO deposits (deposit_id, tx_hash, ...) ON CONFLICT (tx_hash) DO NOTHING
     LC->>PG: INSERT INTO wallets ON CONFLICT (user_id,chain,currency) DO UPDATE SET balance = balance + 1.0
-    PG-->>LC: updated balance: "11.00000000"
+    PG-->>LC: updated balance: '11.00000000'
     Note over LC: DEPOSIT_CREDIT_LUA — INCRBYFLOAT if Redis key exists (preserves bet P&L), SET {pgBalance} if absent (Redis restart recovery)
-    LC->>Redis: EVAL DEPOSIT_CREDIT_LUA(balanceKey, depositAmount="1.0", pgBalance="11.0")
-    Redis-->>LC: "11.00000000" (INCRBYFLOAT: existing 10.0 + 1.0)
-    LC->>Redis: PUBLISH user:updates:{userId} { type: "balance_update", chain: "ethereum", currency: "ETH", balance: 11.0 }
+    LC->>Redis: EVAL DEPOSIT_CREDIT_LUA(balanceKey, depositAmount='1.0', pgBalance='11.0')
+    Redis-->>LC: '11.00000000' (INCRBYFLOAT: existing 10.0 + 1.0)
+    LC->>Redis: PUBLISH user:updates:{userId} { type: 'balance_update', chain: 'ethereum', currency: 'ETH', balance: 11.0 }
     LC->>Kafka: commit offset
 
     Note over API: API Gateway SUBSCRIBEd to user:updates:{userId} — receives Pub/Sub message
-    API->>B: WS push → { type: "BALANCE_UPDATE", balance: 11.0, chain: "ethereum", currency: "ETH" }
+    API->>B: WS push → { type: 'BALANCE_UPDATE', balance: 11.0, chain: 'ethereum', currency: 'ETH' }
     Note over B: Balance updates in real-time without page refresh
 ```
 
@@ -102,23 +102,26 @@ sequenceDiagram
     B->>SolVal: sendTransaction → deposit(amount: u64) instruction, signed by burnerKeypair
     SolVal->>AT: execute deposit() — transfer SPL tokens to Treasury ATA
     AT->>AT: emit DepositEvent { player: PublicKey, amount: u64, timestamp: i64 }
-    SolVal-->>B: TransactionSignature "3Bw..."
+    SolVal-->>B: TransactionSignature '3Bw...'
 
     Note over SL: Program.addEventListener('DepositEvent', ...) via @coral-xyz/anchor
-    SL->>SL: receive DepositEvent { player: "HxK...", amount: 1_000_000, timestamp: 1700000000 }
-    SL->>SL: amount = 1_000_000 / 10^6 → "1.000000" SOL (normalised to NUMERIC(30,8))
+    SL->>SL: receive DepositEvent { player: 'HxK...', amount: 1_000_000, timestamp: 1700000000 }
+    SL->>SL: amount = 1_000_000 / 10^6 → '1.000000' SOL (normalised to NUMERIC(30,8))
     SL->>SL: derive userId from wallets WHERE wallet_address = player.toBase58()
-    SL->>Kafka: produce DepositReceived { chain: "solana", currency: "SOL", userId, amount: "1.000000", txSignature: "3Bw..." }
+    SL->>Kafka: produce DepositReceived { chain: 'solana', currency: 'SOL', userId, amount: '1.000000', txSignature: '3Bw...' }
 
-    LC->>Kafka: consume DepositReceived (chain: "solana")
-    LC->>PG: INSERT INTO wallets ON CONFLICT (user_id, 'solana', 'SOL') DO UPDATE SET balance = balance + 1.0
-    PG-->>LC: updated balance: "11.00000000"
-    LC->>Redis: SET user:{userId}:balance:solana:SOL "11.00000000"
-    LC->>Redis: PUBLISH user:updates:{userId} { type: "balance_update", chain: "solana", currency: "SOL", balance: 11.0 }
+    LC->>Kafka: consume DepositReceived (chain: 'solana')
+    LC->>PG: INSERT INTO deposits (deposit_id, tx_hash, ...) ON CONFLICT (tx_hash) DO NOTHING
+    LC->>PG: INSERT INTO wallets ON CONFLICT (user_id, chain, currency) DO UPDATE SET balance = balance + 1.0
+    PG-->>LC: updated balance: '11.00000000'
+    Note over LC: DEPOSIT_CREDIT_LUA — INCRBYFLOAT if Redis key exists (preserves bet P&L), SET {pgBalance} if absent (Redis restart recovery)
+    LC->>Redis: EVAL DEPOSIT_CREDIT_LUA(balanceKey, depositAmount='1.0', pgBalance='11.0')
+    Redis-->>LC: '11.00000000' (INCRBYFLOAT: existing 10.0 + 1.0)
+    LC->>Redis: PUBLISH user:updates:{userId} { type: 'balance_update', chain: 'solana', currency: 'SOL', balance: 11.0 }
     LC->>Kafka: commit offset
 
     Note over API: API Gateway receives Pub/Sub message
-    API->>B: WS push → { type: "BALANCE_UPDATE", balance: 11.0, chain: "solana", currency: "SOL" }
+    API->>B: WS push → { type: 'BALANCE_UPDATE', balance: 11.0, chain: 'solana', currency: 'SOL' }
 ```
 
 ---
@@ -140,15 +143,15 @@ sequenceDiagram
     par EVM deposit
         B->>Anvil: Treasury.deposit(0.5 ETH)
         Anvil-->>EL: Deposit event emitted
-        EL->>Kafka: produce { chain: "ethereum", amount: "0.5", currency: "ETH" }
+        EL->>Kafka: produce { chain: 'ethereum', amount: '0.5', currency: 'ETH' }
     and Solana deposit (concurrent)
         B->>SolVal: deposit(0.5 SOL) instruction
         SolVal-->>SL: DepositEvent emitted
-        SL->>Kafka: produce { chain: "solana", amount: "0.5", currency: "SOL" }
+        SL->>Kafka: produce { chain: 'solana', amount: '0.5', currency: 'SOL' }
     end
 
     Note over Kafka: Both messages land on the same DepositReceived topic
-    Note over LC: Ledger Consumer processes batches in parallel (eachBatch + Promise.all by user_id); 3 replicas = 3 partition processors
+    Note over LC: Ledger Consumer processes batches in parallel (eachBatch + Promise.all by user_id), 3 replicas = 3 partition processors
 
     LC->>Kafka: consume DepositReceived (ethereum, 0.5 ETH)
     LC->>LC: UPDATE wallets SET balance + 0.5 WHERE chain='ethereum'
@@ -177,20 +180,20 @@ sequenceDiagram
     participant Anvil as Hardhat / Anvil
     participant TSol as Treasury.sol
 
-    B->>N: POST /api/v1/withdraw { amount: 0.5, chain: "ethereum", currency: "ETH" }  Bearer JWT
+    B->>N: POST /api/v1/withdraw { amount: 0.5, chain: 'ethereum', currency: 'ETH' }  Bearer JWT
     N->>API: forward
 
     API->>API: jwt.verify + Redis session check
-    API->>Redis: EVAL lua_balance_check_deduct(userId, "ethereum", "ETH", 0.5)
+    API->>Redis: EVAL lua_balance_check_deduct(userId, 'ethereum', 'ETH', 0.5)
     Note over Redis: Atomic: check balance >= 0.5, deduct if sufficient
     Redis-->>API: { success: true, newBalance: 99.5 }
 
-    API->>Kafka: produce WithdrawalRequested { withdrawalId: uuid, userId, amount: 0.5, chain: "ethereum", currency: "ETH", toAddress: "0x..." }
+    API->>Kafka: produce WithdrawalRequested { withdrawalId: uuid, userId, amount: 0.5, chain: 'ethereum', currency: 'ETH', toAddress: '0x...' }
     Note over API: acks: 'all' — durable delivery guaranteed before HTTP response
-    API-->>B: HTTP 202 { withdrawalId: "uuid", status: "PENDING" }
+    API-->>B: HTTP 202 { withdrawalId: 'uuid', status: 'PENDING' }
 
-    Note over EPW: Consuming WithdrawalRequested — filters on chain === "ethereum"
-    EPW->>Kafka: consume WithdrawalRequested (chain: "ethereum")
+    Note over EPW: Consuming WithdrawalRequested — filters on chain === 'ethereum'
+    EPW->>Kafka: consume WithdrawalRequested (chain: 'ethereum')
 
     Note over EPW: In-session idempotency check — skip Kafka at-least-once redeliveries
     EPW->>EPW: if completedThisRun.has(withdrawal_id) → skip (already paid this session)
@@ -201,17 +204,17 @@ sequenceDiagram
     EPW->>EPW: while (payoutBusy) { await sleep(50ms) }
     EPW->>EPW: payoutBusy = true
 
-    EPW->>EPW: read TREASURY_OWNER_PRIVATE_KEY from env (PoC: deterministic Hardhat key from .env; production: Ansible Vault)
+    EPW->>EPW: read TREASURY_OWNER_PRIVATE_KEY from env (PoC: deterministic Hardhat key from .env, production: Ansible Vault)
     EPW->>EPW: ethers.Wallet(privateKey, provider) → treasuryWallet
 
     loop sendPayout — up to 20 retries on NONCE_EXPIRED
         EPW->>Anvil: treasuryContract.payout(toAddress, amount) — signed tx
         alt NONCE_EXPIRED (ghost tx from old race-condition session occupies nonce)
-            Anvil-->>EPW: error { code: "NONCE_EXPIRED" }
+            Anvil-->>EPW: error { code: 'NONCE_EXPIRED' }
             Note over EPW: ethers auto-queries fresh nonce from eth_getTransactionCount on next attempt
         else Success
             Anvil->>TSol: execute payout() — transfer ETH from contract to recipient
-            Anvil-->>EPW: tx receipt { status: 1, txHash: "0xdef..." }
+            Anvil-->>EPW: tx receipt { status: 1, txHash: '0xdef...' }
         end
     end
 
@@ -225,10 +228,10 @@ sequenceDiagram
     LC->>PG: INSERT INTO withdrawals (withdrawal_id, ...) ON CONFLICT DO NOTHING
     LC->>PG: UPDATE wallets SET balance = balance - amount (via CTE join — skipped if withdrawal already recorded)
     Note over LC: Publish both events (Redis Pub/Sub does NOT guarantee ordering between messages)
-    LC->>Redis: PUBLISH user:updates:{userId} { type: "BALANCE_UPDATE", chain, currency, balance }
-    LC->>Redis: PUBLISH user:updates:{userId} { type: "WITHDRAWAL_COMPLETED", withdrawalId, txHash, chain, currency, amount }
+    LC->>Redis: PUBLISH user:updates:{userId} { type: 'BALANCE_UPDATE', chain, currency, balance }
+    LC->>Redis: PUBLISH user:updates:{userId} { type: 'WITHDRAWAL_COMPLETED', withdrawalId, txHash, chain, currency, amount }
     Note over API: API Gateway receives Pub/Sub messages → forwards each to WebSocket (order not guaranteed)
-    API->>B: WS push → { type: "BALANCE_UPDATE" | "WITHDRAWAL_COMPLETED" } (either order)
+    API->>B: WS push → { type: 'BALANCE_UPDATE' | 'WITHDRAWAL_COMPLETED' } (either order)
     Note over B: Clients MUST reconcile on WITHDRAWAL_COMPLETED: fetch latest balance via REST (e.g. fetchBalances) to ensure correct UI state regardless of message order
 
     Note over EPW: dicetilt_withdrawal_completions_total{chain="ethereum"} incremented
@@ -254,28 +257,28 @@ sequenceDiagram
     participant SolVal as Solana Validator
     participant AT as Anchor Treasury Program
 
-    B->>API: POST /api/v1/withdraw { amount: 1.0, chain: "solana", currency: "SOL" }  Bearer JWT
-    API->>Redis: EVAL lua_balance_check_deduct(userId, "solana", "SOL", 1.0)
+    B->>API: POST /api/v1/withdraw { amount: 1.0, chain: 'solana', currency: 'SOL' }  Bearer JWT
+    API->>Redis: EVAL lua_balance_check_deduct(userId, 'solana', 'SOL', 1.0)
     Redis-->>API: { success: true, newBalance: 10.0 }
 
-    API->>Kafka: produce WithdrawalRequested { ..., chain: "solana", currency: "SOL", toAddress: "HxK..." }
-    API-->>B: HTTP 202 { withdrawalId, status: "PENDING" }
+    API->>Kafka: produce WithdrawalRequested { ..., chain: 'solana', currency: 'SOL', toAddress: 'HxK...' }
+    API-->>B: HTTP 202 { withdrawalId, status: 'PENDING' }
 
-    Note over SPW: Consuming WithdrawalRequested — filters on chain === "solana"
-    SPW->>Kafka: consume WithdrawalRequested (chain: "solana")
-    SPW->>SPW: read SOLANA_TREASURY_KEYPAIR from env (PoC: pre-generated key from .env; production: Ansible Vault)
+    Note over SPW: Consuming WithdrawalRequested — filters on chain === 'solana'
+    SPW->>Kafka: consume WithdrawalRequested (chain: 'solana')
+    SPW->>SPW: read SOLANA_TREASURY_KEYPAIR from env (PoC: pre-generated key from .env, production: Ansible Vault)
     SPW->>SPW: Keypair.fromSecretKey(secretKey) → treasuryKeypair
     SPW->>SPW: build withdraw(amount, recipient) Anchor instruction
     SPW->>SolVal: sendTransaction(signedWithdrawTx)
     SolVal->>AT: execute withdraw() — transfer SPL tokens to recipient ATA
     AT-->>SolVal: emit WithdrawEvent { recipient, amount, timestamp }
-    SolVal-->>SPW: TransactionSignature "5Qr..."
+    SolVal-->>SPW: TransactionSignature '5Qr...'
 
     SPW->>Kafka: produce WithdrawalCompleted { withdrawalId, userId, chain, amount, txSignature, completedAt }
     SPW->>Kafka: commit offset
 
     Note over LC: Ledger Consumer consumes WithdrawalCompleted
-    LC->>Redis: PUBLISH user:updates:{userId} { type: "withdrawal_completed", ... }
+    LC->>Redis: PUBLISH user:updates:{userId} { type: 'withdrawal_completed', ... }
     Note over API: API Gateway pushes WITHDRAWAL_COMPLETED to WebSocket
     Note over SPW: dicetilt_withdrawal_completions_total{chain="solana"} incremented
 ```
@@ -291,15 +294,15 @@ sequenceDiagram
     participant Redis as Redis
     participant Kafka as Kafka
 
-    B->>API: POST /api/v1/withdraw { amount: 999, chain: "ethereum", currency: "ETH" }
+    B->>API: POST /api/v1/withdraw { amount: 999, chain: 'ethereum', currency: 'ETH' }
 
-    API->>Redis: EVAL lua_balance_check_deduct(userId, "ethereum", "ETH", 999)
+    API->>Redis: EVAL lua_balance_check_deduct(userId, 'ethereum', 'ETH', 999)
     Note over Redis: Lua: IF balance (50) < amount (999) THEN return error
-    Redis-->>API: { success: false, reason: "INSUFFICIENT_BALANCE" }
+    Redis-->>API: { success: false, reason: 'INSUFFICIENT_BALANCE' }
 
     Note over API: Kafka is never touched. No WithdrawalRequested event produced.
     Note over API: dicetilt_double_spend_rejections_total incremented
-    API-->>B: HTTP 400 { code: "INSUFFICIENT_BALANCE", message: "Insufficient balance for withdrawal" }
+    API-->>B: HTTP 400 { code: 'INSUFFICIENT_BALANCE', message: 'Insufficient balance for withdrawal' }
 ```
 
 ---
@@ -311,21 +314,21 @@ Both payout workers subscribe to the same `WithdrawalRequested` Kafka topic but 
 ```mermaid
 flowchart TD
     API["API Gateway"]
-    WRTopic["Kafka: WithdrawalRequested\n(single shared topic)"]
+    WRTopic["Kafka: WithdrawalRequested (single shared topic)"]
 
-    API -->|"produce\n{ chain, currency, amount, toAddress }"| WRTopic
+    API -->|"produce — chain, currency, amount, toAddress"| WRTopic
 
-    WRTopic --> EVMFilter{"chain === 'ethereum'?"}
-    WRTopic --> SolFilter{"chain === 'solana'?"}
+    WRTopic --> EVMFilter{"chain is ethereum?"}
+    WRTopic --> SolFilter{"chain is solana?"}
 
-    EVMFilter -->|"Yes — consume"| EVMPay["EVM Payout Worker\nethers.Wallet signing"]
+    EVMFilter -->|"Yes — consume"| EVMPay["EVM Payout Worker — ethers.Wallet signing"]
     EVMFilter -->|"No — skip"| EVMSkip["(message ignored)"]
 
-    SolFilter -->|"Yes — consume"| SolPay["Solana Payout Worker\nAnchor instruction signing"]
+    SolFilter -->|"Yes — consume"| SolPay["Solana Payout Worker — Anchor instruction signing"]
     SolFilter -->|"No — skip"| SolSkip["(message ignored)"]
 
-    EVMPay --> Anvil["Hardhat/Anvil\nTreasury.payout()"]
-    SolPay --> SolVal["Solana Validator\nAnchor withdraw()"]
+    EVMPay --> Anvil["Hardhat/Anvil — Treasury.payout()"]
+    SolPay --> SolVal["Solana Validator — Anchor withdraw()"]
 ```
 
 > **Design principle (Constraint 20):** The `chain` and `currency` fields are carried in the Kafka event payload — not derived from any gateway logic. Each payout worker is responsible for its own filtering. This enables adding new chains (e.g., Tron, Bitcoin Lightning) by deploying a new payout worker without modifying any existing service.
@@ -348,8 +351,8 @@ sequenceDiagram
 
     Anvil--xEL: WebSocket connection dropped (node restart / network issue)
     EL->>EL: onDisconnect handler triggered
-    EL->>Health: health check returns { status: "degraded", chain: "ethereum" }
-    EL->>Prom: increment dicetilt_web3_listener_reconnections_total{chain="ethereum"}
+    EL->>Health: health check returns { status: 'degraded', chain: 'ethereum' }
+    EL->>Prom: increment dicetilt_web3_listener_reconnections_total{chain='ethereum'}
 
     loop Exponential Backoff (attempt 1..N)
         EL->>EL: wait = min(baseDelay * 2^attempt, maxDelay)  e.g., 1s, 2s, 4s, 8s, 30s cap
@@ -357,7 +360,7 @@ sequenceDiagram
         alt Reconnect successful
             Anvil-->>EL: WebSocket connected
             EL->>EL: re-subscribe to Deposit events from last processed block
-            EL->>Health: health check returns { status: "healthy" }
+            EL->>Health: health check returns { status: 'healthy' }
             Note over EL: No events missed — re-subscribe from last known block number
         else Still failing
             EL->>EL: log error, continue backoff loop
@@ -383,8 +386,8 @@ sequenceDiagram
 
     SolVal--xSL: WebSocket connection dropped
     SL->>SL: onDisconnect / error handler triggered
-    SL->>Health: { status: "degraded", chain: "solana" }
-    SL->>Prom: increment dicetilt_web3_listener_reconnections_total{chain="solana"}
+    SL->>Health: { status: 'degraded', chain: 'solana' }
+    SL->>Prom: increment dicetilt_web3_listener_reconnections_total{chain='solana'}
 
     loop Exponential Backoff
         SL->>SL: wait exponential delay
@@ -392,7 +395,7 @@ sequenceDiagram
         alt Reconnect successful
             SolVal-->>SL: connected
             SL->>SL: re-register Program.addEventListener from last confirmed slot
-            SL->>Health: { status: "healthy" }
+            SL->>Health: { status: 'healthy' }
         else Failing
             SL->>SL: log, continue backoff
         end
