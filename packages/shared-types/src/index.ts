@@ -7,6 +7,7 @@ export type {
   WithdrawalRequestedEvent,
   WithdrawalCompletedEvent,
   TradeExecutedEvent,
+  EscrowStuckEvent,
   DeadLetterMessage,
 } from './kafka-events.js';
 
@@ -58,5 +59,6 @@ export {
   PfCalculateRequestSchema,
   PfRotateSeedRequestSchema,
   AuthMessageSchema,
+  ServerMessageSchema,
 } from './validation.js';
 export type { BetRequest, ClientMessage } from './validation.js';

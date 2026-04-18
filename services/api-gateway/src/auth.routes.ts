@@ -6,10 +6,10 @@ import jwt from 'jsonwebtoken';
 import { ethers } from 'ethers';
 import { AuthVerifyRequestSchema } from '@dicetilt/shared-types';
 import { config } from './config.js';
-import { redis, setSession, initUserRedisState, getUserBalance } from './redis.service.js';
+import { redis, setSession, initUserRedisState, getUserBalance, checkRateLimit } from './redis.service.js';
 import { createUserWithWallets, findUserByWalletAddress, insertSeedCommitment } from './db.js';
 import { pfGenerateSeed } from './pf.client.js';
-import { authFailures } from './metrics.js';   // Fix #10
+import { authFailures, rateLimitRejections } from './metrics.js';   // Fix #10
 import { createLoggers, pseudonymize } from '@dicetilt/logger';
 
 const { audit, security } = createLoggers('api-gateway');
@@ -18,13 +18,33 @@ const router: RouterType = Router();
 
 // Challenges stored in Redis (key: challenge:{nonce}) so all cluster workers share
 // the same store. Per-worker Map broke auth when challenge and verify hit different workers.
-router.post('/api/v1/auth/challenge', async (_req: Request, res: Response) => {
+router.post('/api/v1/auth/challenge', async (req: Request, res: Response) => {
+  // M3 — Rate limit by IP to prevent Redis key flood.
+  const ip = req.ip || req.socket.remoteAddress || 'unknown';
+  const allowed = await checkRateLimit(ip, 'auth_challenge', config.authRateLimitWindowSec, config.authRateLimitMax);
+  if (!allowed) {
+    rateLimitRejections.inc({ limiter_type: 'auth_challenge' });
+    security.warn('Auth challenge rate limit exceeded', { event: 'RATE_LIMITED', ip, action: 'auth_challenge' });
+    res.status(429).json({ error: 'TOO_MANY_REQUESTS' });
+    return;
+  }
+
   const nonce = uuidv4();
   await redis.set(`challenge:${nonce}`, '1', 'PX', config.challengeTtlMs);
   res.json({ nonce });
 });
 
 router.post('/api/v1/auth/verify', async (req: Request, res: Response) => {
+  // M3 — Rate limit by IP to prevent brute-force signature verification attempts.
+  const ip = req.ip || req.socket.remoteAddress || 'unknown';
+  const allowed = await checkRateLimit(ip, 'auth_verify', config.authRateLimitWindowSec, config.authRateLimitMax);
+  if (!allowed) {
+    rateLimitRejections.inc({ limiter_type: 'auth_verify' });
+    security.warn('Auth verify rate limit exceeded', { event: 'RATE_LIMITED', ip, action: 'auth_verify' });
+    res.status(429).json({ error: 'TOO_MANY_REQUESTS' });
+    return;
+  }
+
   try {
     const parsed = AuthVerifyRequestSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -78,21 +98,17 @@ router.post('/api/v1/auth/verify', async (req: Request, res: Response) => {
       userId = uuidv4();
       const seed = await pfGenerateSeed();
       serverSeed = seed.serverSeed;
+      await createUserWithWallets(userId, serverSeed, walletAddress);
+      // H2/M9 — Persist the initial seed commitment to the immutable audit log.
+      const commitment = crypto.createHash('sha256').update(serverSeed).digest('hex');
       try {
-        await createUserWithWallets(userId, serverSeed, walletAddress);
-        // H2/M9 — Persist the initial seed commitment to the immutable audit log.
-        const commitment = crypto.createHash('sha256').update(serverSeed).digest('hex');
-        try {
-          await insertSeedCommitment(userId, commitment);
-        } catch (commitmentErr) {
-          // Critical audit failure - user created but commitment missing
-          console.error(`CRITICAL: Seed commitment insertion failed for userId ${userId}`, commitmentErr);
-          throw commitmentErr; // Fail registration to maintain consistency
-        }
-        await initUserRedisState(userId, serverSeed, config.defaultEthBalance, config.defaultSolBalance);
-      } catch (createErr: unknown) {
-        // ... existing error handling ...
+        await insertSeedCommitment(userId, commitment);
+      } catch (commitmentErr) {
+        // Critical audit failure - user created but commitment missing
+        console.error(`CRITICAL: Seed commitment insertion failed for userId ${userId}`, commitmentErr);
+        throw commitmentErr; // Fail registration to maintain consistency
       }
+      await initUserRedisState(userId, serverSeed, config.defaultEthBalance, config.defaultSolBalance);
     }
 
     await setSession(userId);
@@ -134,7 +150,9 @@ router.get('/api/v1/config', (_req: Request, res: Response) => {
     try {
       const p = '/shared/treasury-addr';
       if (existsSync(p)) addr = readFileSync(p, 'utf8').trim();
-    } catch {}
+    } catch (e) {
+      // Non-fatal: treasury address might not be provisioned yet in some environments
+    }
   }
   // PUBLIC_EVM_RPC_URL is the browser-reachable address (e.g. http://localhost:8545).
   // EVM_RPC_URL is the Docker-internal address (http://evm-node:8545) — not reachable from browsers.

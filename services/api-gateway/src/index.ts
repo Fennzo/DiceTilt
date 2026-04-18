@@ -112,6 +112,10 @@ if (cluster.isPrimary) {
     });
   });
 
+  app.use((req, res) => {
+    res.status(404).json({ error: 'not_found', path: req.path });
+  });
+
   async function start() {
     await connectProducer();
 

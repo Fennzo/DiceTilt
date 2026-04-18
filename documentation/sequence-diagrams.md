@@ -28,7 +28,7 @@ All user-facing and session-related interaction flows. For blockchain-specific d
 | 16 | Caching — Balance Eviction Recovery | Caching |
 | 17 | WebSocket PING / PONG Keep-Alive | Infrastructure |
 | 18 | WebSocket Connection State Machine | Infrastructure |
-| 19 | Developer & Testing Infrastructure (TEST_MODE + /?demo=1) | Developer Tools |
+| 19 | Developer & Testing Infrastructure (TEST_MODE + localhost pre-funded wallet) | Developer Tools |
 
 ---
 
@@ -612,11 +612,11 @@ sequenceDiagram
 
 ---
 
-### 19.2 `/?demo=1` Frontend Shortcut
+### 19.2 Localhost Frontend Shortcut
 
-Opening the frontend at `http://localhost/?demo=1` pre-loads Hardhat account #1 (index 1) as the burner wallet instead of generating a random one. This account is pre-funded on Anvil and makes it easy to test the Deposit flow without manually copying a private key.
+Opening the frontend at `http://localhost/` pre-loads Hardhat account #1 (index 1) as the burner wallet instead of generating a random one. This account is pre-funded on Anvil and makes it easy to test the Deposit flow without manually copying a private key.
 
-**Security:** Demo mode is gated by `DEMO_MODE = isLocalhost() && params.get('demo') === '1'`. The test mnemonic is only used when the hostname is `localhost`, `127.0.0.1`, or `*.local`; on production domains, `?demo=1` is ignored and `ethers.Wallet.createRandom()` is used. For production builds, run `BUILD_ENV=production node scripts/build-frontend.js` to strip the mnemonic entirely — output goes to `frontend/dist/`. API/WS URLs use `location.origin` / `location.host`, so demo is implicitly limited to the page's origin (localhost when testing locally).
+**Security:** Localhost mode is gated by `DEMO_MODE = isLocalhost()`. The test mnemonic is only used when the hostname is `localhost`, `127.0.0.1`, or `*.local`; on production domains, `ethers.Wallet.createRandom()`/stored wallets are used. For production builds, run `BUILD_ENV=production node scripts/build-frontend.js` to strip the mnemonic entirely — output goes to `frontend/dist/`. API/WS URLs use `location.origin` / `location.host`, so this shortcut is implicitly limited to the page's origin (localhost when testing locally).
 
 ```mermaid
 sequenceDiagram
@@ -624,8 +624,8 @@ sequenceDiagram
     participant JS as index.html JavaScript
     participant Anvil as Hardhat/Anvil :8545
 
-    Browser->>JS: load index.html?demo=1
-    JS->>JS: DEMO_MODE = isLocalhost() && params.get('demo') === '1'
+    Browser->>JS: load index.html
+    JS->>JS: DEMO_MODE = isLocalhost()
     Note over JS: Only true on localhost / 127.0.0.1 / *.local
     JS->>JS: if DEMO_MODE: wallet = HDNodeWallet.fromMnemonic(Hardhat mnemonic, "m/44'/60'/0'/0/1")
     Note over JS: Hardhat account #1 — deterministic, pre-funded with 10000 ETH by Anvil

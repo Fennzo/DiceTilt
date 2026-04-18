@@ -1,6 +1,6 @@
 import { Kafka, type Producer } from 'kafkajs';
 import { config } from './config.js';
-import { KAFKA_TOPICS, type BetResolvedEvent, type WithdrawalRequestedEvent } from '@dicetilt/shared-types';
+import { KAFKA_TOPICS, type BetResolvedEvent, type WithdrawalRequestedEvent, type EscrowStuckEvent } from '@dicetilt/shared-types';
 import { createLoggers } from '@dicetilt/logger';
 
 const { app: log } = createLoggers('api-gateway');
@@ -41,6 +41,19 @@ export async function produceBetResolved(event: BetResolvedEvent): Promise<void>
 export async function produceWithdrawalRequested(event: WithdrawalRequestedEvent): Promise<void> {
   await producer.send({
     topic: KAFKA_TOPICS.WITHDRAWAL_REQUESTED,
+    acks: -1,
+    messages: [
+      {
+        key: event.user_id,
+        value: JSON.stringify(event),
+      },
+    ],
+  });
+}
+
+export async function produceEscrowStuck(event: EscrowStuckEvent): Promise<void> {
+  await producer.send({
+    topic: KAFKA_TOPICS.ESCROW_STUCK_DLQ,
     acks: -1,
     messages: [
       {

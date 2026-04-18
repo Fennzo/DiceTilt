@@ -31,4 +31,4 @@ pnpm format           # Prettier format all files
 - PoC uses deterministic Hardhat keys from `.env` — no Ansible Vault required at runtime
 - Users start with default balance (10 ETH, 10 SOL) — no on-chain deposit needed for demo
 - **Phase 5 (Sovereign Web3):** EVM node (Anvil), evm-deploy (Treasury.sol), evm-listener, evm-payout-worker, ledger-consumer. Solana layer stubbed for future.
-- **Demo mode:** Open `/?demo=1` to use Hardhat account #1 (pre-funded on Anvil) for Deposit testing
+- **Localhost mode:** Open `http://localhost/` to use Hardhat account #1 (pre-funded on Anvil) for Deposit testing

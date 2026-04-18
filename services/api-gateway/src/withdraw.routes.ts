@@ -3,10 +3,10 @@ import { v4 as uuidv4 } from 'uuid';
 import jwt from 'jsonwebtoken';
 import { WithdrawRequestSchema } from '@dicetilt/shared-types';
 import { config } from './config.js';
-import { checkSession, atomicBalanceDeduct, atomicBalanceCredit } from './redis.service.js';
+import { checkSession, atomicBalanceDeduct, atomicBalanceCredit, checkRateLimit } from './redis.service.js';
 import { getWalletAddress } from './db.js';
 import { produceWithdrawalRequested } from './kafka.producer.js';
-import { withdrawalRequests } from './metrics.js';
+import { withdrawalRequests, rateLimitRejections } from './metrics.js';
 import { createLoggers, pseudonymize } from '@dicetilt/logger';
 
 const { app: log, audit, security } = createLoggers('api-gateway');
@@ -35,6 +35,15 @@ router.post('/api/v1/withdraw', async (req: Request, res: Response) => {
       return;
     }
 
+    // Rate limit withdrawals by user ID.
+    const allowed = await checkRateLimit(userId, 'withdraw', config.withdrawRateLimitWindowSec, config.withdrawRateLimitMax);
+    if (!allowed) {
+      rateLimitRejections.inc({ limiter_type: 'withdraw' });
+      security.warn('Withdraw rate limit exceeded', { event: 'RATE_LIMITED', userId: pseudonymize(userId), action: 'withdraw' });
+      res.status(429).json({ error: 'TOO_MANY_REQUESTS', message: 'Too many withdrawal requests — slow down' });
+      return;
+    }
+
     const parsed = WithdrawRequestSchema.safeParse(req.body);
     if (!parsed.success) {
       security.warn('Invalid withdraw payload', { event: 'INVALID_PAYLOAD', userId: pseudonymize(userId), zodErrors: parsed.error.issues });
@@ -43,6 +52,14 @@ router.post('/api/v1/withdraw', async (req: Request, res: Response) => {
     }
 
     const { amount, chain, currency } = parsed.data;
+    if (chain === 'solana' && currency === 'SOL') {
+      res.status(400).json({
+        error: 'CHAIN_UNAVAILABLE',
+        message: 'SOL is not available for demo deposit/withdrawal',
+      });
+      return;
+    }
+
     const toAddress = await getWalletAddress(userId, chain, currency);
     if (!toAddress || toAddress === 'placeholder-solana-address') {
       res.status(400).json({ error: 'WALLET_NOT_FOUND', message: 'No wallet for this chain/currency' });

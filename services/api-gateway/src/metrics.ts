@@ -54,6 +54,13 @@ export const redisErrorRejections = new client.Counter({
   help: 'Bet rejections due to Redis unavailability (fail closed). Alert on rate > 0.',
 });
 
+// H7 — Fire-and-forget settle exhausted all retries. Escrow key still holds the
+// wager, user funds are stranded until an operator reconciles. Alert on rate > 0.
+export const escrowStuckTotal = new client.Counter({
+  name: 'dicetilt_escrow_stuck_total',
+  help: 'Bet settle retries exhausted; wager remains in escrow and requires manual reconciliation.',
+});
+
 export const authFailures = new client.Counter({
   name: 'dicetilt_auth_failures_total',
   help: 'EIP-712 auth failures',

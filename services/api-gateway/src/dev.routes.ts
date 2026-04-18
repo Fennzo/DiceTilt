@@ -7,9 +7,10 @@ import { v4 as uuidv4 } from 'uuid';
 import jwt from 'jsonwebtoken';
 import { ethers } from 'ethers';
 import { config } from './config.js';
-import { setSession, initUserRedisState, getUserBalance } from './redis.service.js';
+import { setSession, initUserRedisState, getUserBalance, checkRateLimit } from './redis.service.js';
 import { createUserWithWallets, findUserByWalletAddress } from './db.js';
 import { pfGenerateSeed } from './pf.client.js';
+import { rateLimitRejections } from './metrics.js';
 
 const router: RouterType = Router();
 
@@ -26,6 +27,16 @@ router.get('/api/v1/dev/token', async (req: Request, res: Response) => {
     res.status(404).end();
     return;
   }
+
+  // Rate limit by IP for dev token requests.
+  const ip = req.ip || req.socket.remoteAddress || 'unknown';
+  const allowed = await checkRateLimit(ip, 'dev_token', config.authRateLimitWindowSec, config.authRateLimitMax);
+  if (!allowed) {
+    rateLimitRejections.inc({ limiter_type: 'dev_token' });
+    res.status(429).json({ error: 'TOO_MANY_REQUESTS' });
+    return;
+  }
+
   const idx = parseInt((req.query['walletIndex'] as string) ?? '0', 10);
   if (isNaN(idx) || idx < 0 || idx > 9999) {
     res.status(400).json({ error: 'walletIndex must be 0-9999' });

@@ -44,7 +44,7 @@ The platform is designed for two major blockchain ecosystems—Ethereum and Sola
 1. **Instant Play** — Open the app and you're playing immediately. No wallet setup or blockchain wait times. Each new user automatically gets a demo balance.
 2. **Live Metrics** — A Grafana dashboard shows active connections, bets per second, latency histograms, and system health in real time.
 3. **Provably Fair Audit** — Users can verify that each dice roll was generated honestly. After clicking "Rotate Seed & Verify," two hash values appear—one from the server and one recomputed by the browser. They should match exactly, proving no manipulation.
-4. **Deposit & Withdrawal** — In demo mode (`/?demo=1`), users can trigger an on-chain deposit from a pre-funded Ethereum account and see the balance update in real time via WebSocket.
+4. **Deposit & Withdrawal** — On localhost (`/`), users can trigger an on-chain deposit from a pre-funded Ethereum account and see the balance update in real time via WebSocket.
 
 ---
 
@@ -113,8 +113,7 @@ The platform is designed for two major blockchain ecosystems—Ethereum and Sola
    - **Metrics Dashboard:** http://localhost/dashboard.html
    - **Grafana (charts):** http://localhost:3001
 
-6. **Play immediately** — no wallet or blockchain setup. Each user starts with 10 ETH for demo play.
-   - For deposit testing: use http://localhost/?demo=1 (pre-funded demo account).
+6. **Play immediately** — no wallet or blockchain setup. Each localhost session uses a pre-funded Hardhat account for deposit testing.
 
 ### To Stop the Application
 

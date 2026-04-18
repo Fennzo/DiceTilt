@@ -11,7 +11,7 @@ import {
 import { register, collectDefaultMetrics, Counter, Gauge } from 'prom-client';
 import { createLoggers } from '@dicetilt/logger';
 
-const { app: log, audit } = createLoggers('ledger-consumer');
+const { app: log, audit, security } = createLoggers('ledger-consumer');
 
 collectDefaultMetrics();
 const dlqTotal = new Counter({
@@ -23,6 +23,19 @@ const kafkaLag = new Gauge({
   name: 'dicetilt_kafka_consumer_lag',
   help: 'Kafka consumer group lag (sum across partitions)',
   labelNames: ['topic'],
+});
+// C1 — Withdrawal Postgres UPDATE failed (e.g. balance CHECK tripped) while Redis
+// was already deducted at request time. Real inconsistency that ops must reconcile.
+// Alert on rate > 0.
+const withdrawalPgInconsistency = new Counter({
+  name: 'dicetilt_withdrawal_pg_inconsistency_total',
+  help: 'Withdrawal Postgres write failed after Redis was debited — manual reconciliation required.',
+});
+// H5 — Deposit dual-write divergence: Redis balance does not match Postgres.
+// Informational counter so ops can spot skew; individual occurrences are logged at security level.
+const depositRedisPgSkew = new Counter({
+  name: 'dicetilt_deposit_redis_pg_skew_total',
+  help: 'Deposit processed but Redis balance diverges from Postgres — eventual-consistency gap.',
 });
 
 const pool = new pg.Pool({
@@ -75,13 +88,24 @@ async function batchInsertBets(events: BetResolvedEvent[]): Promise<void> {
       ev.wager_amount, ev.payout_amount, ev.game_result,
       ev.client_seed, ev.nonce_used, ev.outcome_hash, ev.executed_at,
     ]);
-    await client.query(
+    const res = await client.query(
       `INSERT INTO transactions
          (bet_id, user_id, chain, currency, wager_amount, payout_amount, game_result, client_seed, nonce_used, outcome_hash, executed_at)
        VALUES ${placeholders}
        ON CONFLICT (bet_id) DO NOTHING`,
       values,
     );
+    if (res.rowCount !== events.length) {
+      // M4 — Audit skipped rows. rowCount < batch size means some rows were
+      // skipped due to ON CONFLICT (bet_id) DO NOTHING.
+      const skippedCount = events.length - (res.rowCount ?? 0);
+      log.warn('Batch bet insert: some rows were skipped (idempotent duplicate)', {
+        event: 'BATCH_INSERT_SKIPPED',
+        batchSize: events.length,
+        inserted: res.rowCount,
+        skipped: skippedCount,
+      });
+    }
     for (const ev of events) {
       audit.info('Bet settled', {
         event: 'BET_SETTLED',
@@ -132,8 +156,30 @@ async function processDepositReceived(ev: DepositReceivedEvent): Promise<boolean
     const redisNewBalance = (await redis.eval(
       DEPOSIT_CREDIT_LUA, 1, balanceKey, ev.amount, pgNewBalance,
     )) as string;
+
+    // H5 — Dual-write skew detection. Redis tracks bet P&L and deposits; Postgres
+    // tracks deposits/withdrawals only. After a deposit, Redis must be >= Postgres
+    // (Redis includes net bet winnings on top). If Redis < Postgres, something
+    // dropped writes (e.g. partial Lua exec, failover). Log + counter for ops.
+    const redisBal = parseFloat(redisNewBalance);
+    const pgBal = parseFloat(pgNewBalance);
+    if (Number.isFinite(redisBal) && Number.isFinite(pgBal) && redisBal + 1e-9 < pgBal) {
+      depositRedisPgSkew.inc();
+      security.error('Deposit Redis/Postgres skew detected', {
+        event: 'DEPOSIT_REDIS_PG_SKEW',
+        depositId: ev.deposit_id,
+        userId: ev.user_id,
+        chain: ev.chain,
+        currency: ev.currency,
+        depositAmount: ev.amount,
+        pgBalance: pgNewBalance,
+        redisBalance: redisNewBalance,
+        diff: (pgBal - redisBal).toString(),
+      });
+    }
+
     await redis.publish(`user:updates:${ev.user_id}`, JSON.stringify({
-      type: 'BALANCE_UPDATE', chain: ev.chain, currency: ev.currency, balance: parseFloat(redisNewBalance),
+      type: 'BALANCE_UPDATE', chain: ev.chain, currency: ev.currency, balance: redisBal,
     }));
 
     audit.info('Deposit settled', {
@@ -162,12 +208,10 @@ async function processDepositReceived(ev: DepositReceivedEvent): Promise<boolean
 async function processWithdrawalCompleted(ev: WithdrawalCompletedEvent): Promise<boolean> {
   const client = await pool.connect();
   try {
-    // Idempotent: insert into withdrawals table, then deduct from wallets only if
-    // this is the first time we've seen this tx_hash (ON CONFLICT DO NOTHING
-    // skips the UPDATE via the CTE join). Matches deposits.tx_hash dedup pattern.
+    // M5 — Use standard ON CONFLICT (tx_hash) DO NOTHING for idempotency.
     // Redis is intentionally NOT overwritten here — it was already atomically
     // deducted when the withdrawal was requested.
-    await client.query(
+    const r = await client.query<{ withdrawal_id: string }>(
       `WITH ins AS (
          INSERT INTO withdrawals (withdrawal_id, user_id, chain, currency, amount, to_address, tx_hash, completed_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -177,12 +221,14 @@ async function processWithdrawalCompleted(ev: WithdrawalCompletedEvent): Promise
        UPDATE wallets w
        SET balance = balance - $5::numeric
        FROM ins
-       WHERE w.user_id = $2 AND w.chain = $3 AND w.currency = $4`,
+       WHERE w.user_id = $2 AND w.chain = $3 AND w.currency = $4
+       RETURNING ins.withdrawal_id`,
       [
         ev.withdrawal_id, ev.user_id, ev.chain, ev.currency, ev.amount,
         ev.to_address, ev.tx_hash, ev.completed_at,
       ],
     );
+    if (r.rowCount === 0) return true; // idempotent duplicate
 
     // Redis balance was already atomically deducted at withdrawal-request time.
     // Publish BALANCE_UPDATE so any connected WS client that missed the immediate
@@ -213,6 +259,21 @@ async function processWithdrawalCompleted(ev: WithdrawalCompletedEvent): Promise
     });
     return true;
   } catch (err) {
+    // C1 — Redis was already debited at withdraw-request time; if the Postgres
+    // UPDATE fails (e.g. chk_wallets_balance_non_negative tripped by a replay),
+    // the two stores are out of sync. Escalate to security.error with full context
+    // so ops can reconcile, and track via an explicit counter (not just DLQ).
+    withdrawalPgInconsistency.inc();
+    security.error('Withdrawal Postgres inconsistency — Redis already debited', {
+      event: 'WITHDRAWAL_PG_INCONSISTENCY',
+      withdrawalId: ev.withdrawal_id,
+      userId: ev.user_id,
+      chain: ev.chain,
+      currency: ev.currency,
+      amount: ev.amount,
+      txHash: ev.tx_hash,
+      error: String(err),
+    });
     audit.error('Withdrawal settlement failed', {
       event: 'WITHDRAWAL_SETTLEMENT_FAILED',
       withdrawalId: ev.withdrawal_id,
@@ -284,17 +345,20 @@ async function main() {
     }
   }, config.kafkaLagPollIntervalMs);
 
-  // Use eachBatch with autoCommit:true for bulk processing.
-  // Inserts are idempotent (ON CONFLICT DO NOTHING) so re-delivery on restart is safe.
+  // H4 — At-least-once delivery. autoCommit:false + manual resolveOffset only
+  // after a successful DB write guarantees a crash between "consume" and "persist"
+  // re-delivers the message on restart. All DB writes are idempotent
+  // (ON CONFLICT DO NOTHING / NOT EXISTS) so re-delivery is safe.
   await consumer.run({
-    autoCommit: true,
-    eachBatch: async ({ batch, heartbeat }) => {
+    autoCommit: false,
+    eachBatch: async ({ batch, heartbeat, resolveOffset, commitOffsetsIfNecessary, isRunning, isStale }) => {
       const { topic, messages } = batch;
 
       if (topic === KAFKA_TOPICS.BET_RESOLVED) {
         const BATCH_SIZE = config.betBatchSize;
         let i = 0;
         while (i < messages.length) {
+          if (!isRunning() || isStale()) break;
           const end = Math.min(i + BATCH_SIZE, messages.length);
           const events: BetResolvedEvent[] = [];
           for (let j = i; j < end; j++) {
@@ -306,6 +370,10 @@ async function main() {
           if (events.length > 0) {
             try {
               await batchInsertBets(events);
+              // Resolve offsets for the slice only after the batch INSERT succeeds.
+              for (let j = i; j < end; j++) {
+                resolveOffset(messages[j]!.offset);
+              }
             } catch (err) {
               const batchBetIds = events.slice(0, 10).map((e) => e.bet_id);
               log.error('Batch BetResolved error', {
@@ -317,26 +385,48 @@ async function main() {
                 error: String(err),
               });
               dlqTotal.inc({ source_topic: 'BetResolved' });
+              // Do NOT resolve offsets on failure — Kafka will re-deliver after
+              // the session times out, giving the retry a chance to succeed.
+              break;
+            }
+          } else {
+            // No parseable events in the slice — advance offsets to avoid a
+            // poison-pill loop on permanently malformed frames.
+            for (let j = i; j < end; j++) {
+              resolveOffset(messages[j]!.offset);
             }
           }
+          await commitOffsetsIfNecessary();
           await heartbeat();
           i = end;
         }
       } else {
         // Process deposit/withdrawal one at a time (rare events)
         for (const message of messages) {
+          if (!isRunning() || isStale()) break;
           const raw = message.value?.toString();
-          if (!raw) continue;
+          if (!raw) {
+            resolveOffset(message.offset);
+            continue;
+          }
           try {
+            let ok = true;
             if (topic === KAFKA_TOPICS.DEPOSIT_RECEIVED) {
-              await processDepositReceived(JSON.parse(raw) as DepositReceivedEvent);
+              ok = await processDepositReceived(JSON.parse(raw) as DepositReceivedEvent);
             } else if (topic === KAFKA_TOPICS.WITHDRAWAL_COMPLETED) {
-              await processWithdrawalCompleted(JSON.parse(raw) as WithdrawalCompletedEvent);
+              ok = await processWithdrawalCompleted(JSON.parse(raw) as WithdrawalCompletedEvent);
             }
+            // Resolve offset only on clean success. On ok=false (DB error already
+            // logged + dlq-counted) leave offset unresolved so Kafka re-delivers.
+            if (ok) resolveOffset(message.offset);
           } catch (err) {
             log.error('Kafka message parse error', { event: 'KAFKA_MESSAGE_PARSE_ERROR', topic, error: String(err) });
             dlqTotal.inc({ source_topic: topic });
+            // Malformed JSON will never parse — advance offset to avoid a poison-pill
+            // loop. The DLQ counter is the durable signal that ops must investigate.
+            resolveOffset(message.offset);
           }
+          await commitOffsetsIfNecessary();
           await heartbeat();
         }
       }

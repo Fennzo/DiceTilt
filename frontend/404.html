@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex">
+  <title>404 — DiceTilt</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&family=Rubik:wght@400;700;800&family=Staatliches&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+    :root {
+      --bg:      #111113;
+      --surface: #1c1c1f;
+      --border:  #35353a;
+      --accent:  #FFE500;
+      --adim:    rgba(255,229,0,0.10);
+      --amid:    rgba(255,229,0,0.28);
+      --text:    #FFFFFF;
+      --text2:   #a1a1aa;
+      --text3:   #52525b;
+      --loss:    #ef4444;
+    }
+    html { font-size: 16px; }
+    body {
+      font-family: 'Poppins', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow-x: hidden;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      padding: 0 24px;
+      height: 60px;
+      background: #0d0d0e;
+      border-bottom: 1px solid var(--border);
+    }
+    .header-logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      text-decoration: none;
+    }
+    .logo-wordmark {
+      font-family: 'Staatliches', cursive;
+      font-size: 2rem;
+      color: var(--accent);
+      letter-spacing: 3px;
+      line-height: 1;
+    }
+    .stage {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 48px 24px;
+    }
+    .card {
+      max-width: 520px;
+      width: 100%;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 48px 36px;
+      text-align: center;
+      position: relative;
+      overflow: hidden;
+    }
+    .card::before {
+      content: "";
+      position: absolute;
+      inset: -1px;
+      border-radius: 16px;
+      padding: 1px;
+      background: linear-gradient(135deg, var(--amid), transparent 40%, var(--amid));
+      -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+      -webkit-mask-composite: xor;
+              mask-composite: exclude;
+      pointer-events: none;
+      opacity: 0.5;
+    }
+    .code {
+      font-family: 'Staatliches', cursive;
+      font-size: clamp(6rem, 18vw, 10rem);
+      color: var(--accent);
+      line-height: 1;
+      letter-spacing: 6px;
+      text-shadow: 0 0 40px var(--adim);
+    }
+    .die {
+      display: inline-block;
+      text-shadow: 0 0 30px var(--amid);
+      animation: wobble 2.4s ease-in-out infinite;
+    }
+    @keyframes wobble {
+      0%, 100% { transform: rotate(-8deg); }
+      50%      { transform: rotate(8deg); }
+    }
+    .title {
+      font-family: 'Rubik', sans-serif;
+      font-weight: 800;
+      font-size: 1.3rem;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      margin-top: 8px;
+    }
+    .sub {
+      color: var(--text2);
+      font-size: 0.95rem;
+      margin-top: 14px;
+      line-height: 1.5;
+    }
+    .path {
+      display: inline-block;
+      margin-top: 18px;
+      padding: 6px 12px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: #0d0d0e;
+      font-family: 'Courier New', monospace;
+      font-size: 0.78rem;
+      color: var(--loss);
+      word-break: break-all;
+      max-width: 100%;
+    }
+    .cta {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 28px;
+      padding: 12px 22px;
+      font-family: 'Rubik', sans-serif;
+      font-weight: 700;
+      font-size: 0.9rem;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      text-decoration: none;
+      color: #111;
+      background: var(--accent);
+      border-radius: 10px;
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+    }
+    .cta:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 10px 30px var(--adim);
+    }
+    .footer-note {
+      color: var(--text3);
+      font-size: 0.72rem;
+      margin-top: 22px;
+      letter-spacing: 0.5px;
+    }
+  </style>
+</head>
+<body>
+  <header class="header">
+    <a href="/" class="header-logo">
+      <span class="logo-wordmark">DiceTilt</span>
+    </a>
+  </header>
+
+  <main class="stage">
+    <section class="card" role="alert" aria-labelledby="not-found-title">
+      <div class="code"><span class="die">4</span><span class="die" style="animation-delay:-0.8s">0</span><span class="die" style="animation-delay:-1.6s">4</span></div>
+      <h1 id="not-found-title" class="title">Page Not Found</h1>
+      <p class="sub">The dice rolled off the table. This path isn&rsquo;t part of the game.</p>
+      <div class="path" id="requested-path"></div>
+      <a class="cta" href="/">&#x2190;&nbsp;Back to the Floor</a>
+      <div class="footer-note">DiceTilt &middot; local PoC</div>
+    </section>
+  </main>
+
+  <script>
+    var el = document.getElementById('requested-path');
+    if (el) el.textContent = location.pathname + (location.search || '');
+  </script>
+</body>
+</html>

@@ -6,17 +6,131 @@
 
 ## Tech Stack
 
-| Layer | Technologies |
-|-------|--------------|
-| **Language** | TypeScript (strict mode), Rust (Trade Router stub) |
-| **Runtime** | Node.js 20+, pnpm workspaces (monorepo) |
-| **Data** | PostgreSQL 16, Redis 7, Apache Kafka (KRaft mode) |
-| **Blockchain** | ethers.js (EVM), Hardhat/Anvil (local EVM node) |
-| **Smart Contracts** | Solidity — Treasury.sol (EVM, fully deployed) |
-| **Infrastructure** | Docker Compose (14 services), Nginx (reverse proxy, WebSocket) |
-| **Observability** | Prometheus, Grafana, prom-client, Redis/Postgres/Kafka exporters |
-| **Testing** | Jest (10 unit tests), k6 (5-scenario stress suite), integration test suite |
-| **Validation** | Zod schemas, three-layer input validation |
+
+| Layer               | Technologies                                                               |
+| ------------------- | -------------------------------------------------------------------------- |
+| **Language**        | TypeScript (strict mode), Rust (Trade Router stub)                         |
+| **Runtime**         | Node.js 20+, pnpm workspaces (monorepo)                                    |
+| **Data**            | PostgreSQL 16, Redis 7, Apache Kafka (KRaft mode)                          |
+| **Blockchain**      | ethers.js (EVM), Hardhat/Anvil (local EVM node)                            |
+| **Smart Contracts** | Solidity — Treasury.sol (EVM, fully deployed)                              |
+| **Infrastructure**  | Docker Compose (14 services), Nginx (reverse proxy, WebSocket)             |
+| **Observability**   | Prometheus, Grafana, prom-client, Redis/Postgres/Kafka exporters           |
+| **Testing**         | Jest (10 unit tests), k6 (5-scenario stress suite), integration test suite |
+| **Validation**      | Zod schemas, three-layer input validation                                  |
+
+
+### Technology Breakdown
+
+#### Languages & Runtimes
+
+
+| Technology              | Role                                                  |
+| ----------------------- | ----------------------------------------------------- |
+| **TypeScript** (strict) | Primary language for all services and shared packages |
+| **Node.js 20+**         | Runtime for TypeScript services                       |
+| **Rust**                | Trade Router stub (Tokio for MEV path computation)    |
+| **Solidity**            | EVM smart contracts (`Treasury.sol`)                  |
+| **pnpm**                | Monorepo package manager and workspaces               |
+
+
+#### Application Layer (TypeScript Services)
+
+
+| Library          | Service(s)                                                 | Purpose                                       |
+| ---------------- | ---------------------------------------------------------- | --------------------------------------------- |
+| **Express**      | API Gateway, Provably Fair                                 | HTTP server                                   |
+| **ws**           | API Gateway                                                | WebSocket server                              |
+| **ioredis**      | API Gateway, Ledger Consumer                               | Redis client (Lua, Pub/Sub)                   |
+| **kafkajs**      | API Gateway, Ledger Consumer, EVM Listener, Payout Workers | Kafka producer/consumer                       |
+| **pg**           | API Gateway, Ledger Consumer, EVM Listener                 | PostgreSQL client                             |
+| **ethers**       | API Gateway, EVM Listener, EVM Payout Worker               | EVM RPC, wallets, event subscriptions         |
+| **jsonwebtoken** | API Gateway                                                | JWT issuance and validation                   |
+| **zod**          | All services (via shared-types)                            | Schema validation                             |
+| **piscina**      | Provably Fair                                              | Worker threads pool for CPU-bound HMAC-SHA256 |
+| **prom-client**  | All TypeScript services                                    | Prometheus metrics                            |
+| **uuid**         | API Gateway, EVM Listener                                  | Unique IDs                                    |
+| **winston**      | All services (via @dicetilt/logger)                        | Structured logging                            |
+
+
+#### Data & Messaging
+
+
+| Technology               | Role                                                            |
+| ------------------------ | --------------------------------------------------------------- |
+| **PostgreSQL 16**        | ACID ledger, `transactions`, `wallets`, `seed_commitment_audit` |
+| **Redis 7**              | Balances, nonces, sessions, rate limiting (ZSET), Pub/Sub       |
+| **Apache Kafka (KRaft)** | Durable event bus (no Zookeeper)                                |
+
+
+#### Blockchain
+
+
+| Technology                | Chain  | Role                                      |
+| ------------------------- | ------ | ----------------------------------------- |
+| **Hardhat**               | EVM    | Compile and deploy Solidity               |
+| **Anvil** (Foundry)       | EVM    | Local chain node                          |
+| **ethers.js v6**          | EVM    | RPC, event subscriptions, signing         |
+| **solana-test-validator** | Solana | Local validator (documented, not running) |
+| **@solana/web3.js**       | Solana | RPC, program events (documented)          |
+| **@coral-xyz/anchor**     | Solana | Program/IDL usage (documented)            |
+
+
+#### Infrastructure
+
+
+| Technology                     | Role                                                        |
+| ------------------------------ | ----------------------------------------------------------- |
+| **Docker Compose**             | Orchestration (14 services)                                 |
+| **Nginx**                      | Reverse proxy, CORS, WebSocket upgrade, static file serving |
+| **Ansible**                    | Deployment automation (production)                          |
+| **Ansible Vault**              | Secret management (production)                              |
+| **Event-Driven Ansible (EDA)** | Alert-driven remediation (documented)                       |
+
+
+#### Observability
+
+
+| Technology             | Role                          |
+| ---------------------- | ----------------------------- |
+| **Prometheus**         | Metrics scraping and alerting |
+| **Grafana**            | Dashboards (PromQL)           |
+| **redis_exporter**     | Redis metrics                 |
+| **postgres_exporter**  | PostgreSQL metrics            |
+| **Kafka JMX Exporter** | Kafka broker metrics          |
+
+
+#### Testing & Validation
+
+
+| Technology | Role                                 |
+| ---------- | ------------------------------------ |
+| **Jest**   | Unit tests                           |
+| **k6**     | Load and stress tests                |
+| **Zod**    | Input validation (frontend, API, DB) |
+
+
+#### Dev Tooling
+
+
+| Technology   | Role                        |
+| ------------ | --------------------------- |
+| **ESLint**   | Linting                     |
+| **Prettier** | Formatting                  |
+| **tsx**      | TypeScript execution in dev |
+| **rimraf**   | Clean build artifacts       |
+| **mermaid**  | Diagram validation          |
+
+
+#### Frontend
+
+
+| Technology          | Role                               |
+| ------------------- | ---------------------------------- |
+| **Vanilla HTML/JS** | `index.html`, `dashboard.html`     |
+| **ethers.js**       | Wallet auth (EIP-712), signing     |
+| **WebSocket API**   | Real-time bets and balance updates |
+
 
 ---
 
@@ -48,21 +162,23 @@
 
 ## Engineering Constraints Implemented
 
-| Constraint | Implementation |
-|------------|----------------|
-| **Double-Spend Prevention** | Redis Lua script — atomic GET + conditional DECRBY in a single round-trip. No sequential GET/SET race window. |
-| **Escrow Model** | Wager moves from `balance_available` → `balance_escrowed` atomically on bet start; settles back on resolve. In-flight bets can never be double-spent even under concurrent load. |
-| **Idempotency** | `ON CONFLICT (bet_id) DO NOTHING` on all Kafka-sourced PostgreSQL inserts. |
-| **Withdrawal Isolation** | API Gateway never holds private keys. Payout Worker in isolated Docker subnet signs transactions — a compromised gateway cannot sign. |
-| **Payout Nonce Safety** | `payoutBusy` mutex (atomic in Node.js single-thread) + retry loop on `NONCE_EXPIRED`. Prevents ghost-txn nonce conflicts from KafkaJS concurrent-partition processing. |
-| **EIP-712 Auth** | Cryptographic wallet signature verification on login. JWT session. WebSocket auth via first frame (not URL token) with 10s timeout for unauthenticated connections. `maxPayload: 64KB` against oversized frame attacks. |
-| **Provably Fair** | Server seed committed via SHA-256 before betting. HMAC-SHA256(serverSeed, clientSeed:nonce). Seed fetched fresh from Redis per bet. Full rotation lifecycle with server-side attestation (`serverVerified: true`) + immutable `seed_commitment_audit` table in PostgreSQL. |
-| **Rate Limiting** | Redis ZSET sliding window, Lua atomic. 30 bets/sec per user. Fails open on Redis error — availability over enforcement on transient blip. |
-| **Input Validation** | Three layers: frontend (UX), Zod at Gateway (typed enforcement), PostgreSQL CHECK constraints (safety net). |
-| **DLQ Routing** | Failed Kafka messages → `*-DLQ` topics for audit. Zero data loss on processing failures. |
-| **Graceful Shutdown** | SIGTERM/SIGINT handlers. Kafka offset commit, connection pool drain. |
-| **Health Checks** | `depends_on: condition: service_healthy` for Postgres, Redis, Kafka. Containers wait for dependencies. |
-| **Secrets** | `.env` + Ansible Vault design for production. PoC uses deterministic Hardhat keys — no Vault required at runtime. |
+
+| Constraint                  | Implementation                                                                                                                                                                                                                                                             |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Double-Spend Prevention** | Redis Lua script — atomic GET + conditional DECRBY in a single round-trip. No sequential GET/SET race window.                                                                                                                                                              |
+| **Escrow Model**            | Wager moves from `balance_available` → `balance_escrowed` atomically on bet start; settles back on resolve. In-flight bets can never be double-spent even under concurrent load.                                                                                           |
+| **Idempotency**             | `ON CONFLICT (bet_id) DO NOTHING` on all Kafka-sourced PostgreSQL inserts.                                                                                                                                                                                                 |
+| **Withdrawal Isolation**    | API Gateway never holds private keys. Payout Worker in isolated Docker subnet signs transactions — a compromised gateway cannot sign.                                                                                                                                      |
+| **Payout Nonce Safety**     | `payoutBusy` mutex (atomic in Node.js single-thread) + retry loop on `NONCE_EXPIRED`. Prevents ghost-txn nonce conflicts from KafkaJS concurrent-partition processing.                                                                                                     |
+| **EIP-712 Auth**            | Cryptographic wallet signature verification on login. JWT session. WebSocket auth via first frame (not URL token) with 10s timeout for unauthenticated connections. `maxPayload: 64KB` against oversized frame attacks.                                                    |
+| **Provably Fair**           | Server seed committed via SHA-256 before betting. HMAC-SHA256(serverSeed, clientSeed:nonce). Seed fetched fresh from Redis per bet. Full rotation lifecycle with server-side attestation (`serverVerified: true`) + immutable `seed_commitment_audit` table in PostgreSQL. |
+| **Rate Limiting**           | Redis ZSET sliding window, Lua atomic. 30 bets/sec per user. Fails open on Redis error — availability over enforcement on transient blip.                                                                                                                                  |
+| **Input Validation**        | Three layers: frontend (UX), Zod at Gateway (typed enforcement), PostgreSQL CHECK constraints (safety net).                                                                                                                                                                |
+| **DLQ Routing**             | Failed Kafka messages → `*-DLQ` topics for audit. Zero data loss on processing failures.                                                                                                                                                                                   |
+| **Graceful Shutdown**       | SIGTERM/SIGINT handlers. Kafka offset commit, connection pool drain.                                                                                                                                                                                                       |
+| **Health Checks**           | `depends_on: condition: service_healthy` for Postgres, Redis, Kafka. Containers wait for dependencies.                                                                                                                                                                     |
+| **Secrets**                 | `.env` + Ansible Vault design for production. PoC uses deterministic Hardhat keys — no Vault required at runtime.                                                                                                                                                          |
+
 
 ---
 
@@ -72,26 +188,30 @@
 
 Measured with k6 (100 VUs, 60s), connecting directly to `api-gateway:3000` to isolate service latency from Nginx/WSL2 overhead.
 
-| Metric | Result |
-|--------|--------|
-| P95 bet processing (internal) | **17.9 ms** (SLO: <20 ms ✓) |
-| Throughput | **148,743 bets / 60 s** (2,479/sec) |
-| Error rate under load | **0%** (only correct `INSUFFICIENT_BALANCE` rejections) |
-| DLQ messages after 60s | **0** |
-| Kafka lag after 60s load | Clears in < 1 second |
-| Double-spend test | 1 of 20 concurrent 9 ETH bets accepted — Lua atomicity confirmed |
+
+| Metric                        | Result                                                           |
+| ----------------------------- | ---------------------------------------------------------------- |
+| P95 bet processing (internal) | **17.9 ms** (SLO: <20 ms ✓)                                      |
+| Throughput                    | **148,743 bets / 60 s** (2,479/sec)                              |
+| Error rate under load         | **0%** (only correct `INSUFFICIENT_BALANCE` rejections)          |
+| DLQ messages after 60s        | **0**                                                            |
+| Kafka lag after 60s load      | Clears in < 1 second                                             |
+| Double-spend test             | 1 of 20 concurrent 9 ETH bets accepted — Lua atomicity confirmed |
+
 
 ### Stress Suite (5 scenarios, ascending load)
 
 Full suite run: `bash scripts/run-stress-suite.sh` (~26 min with shortened durations). Each scenario models a distinct real-world traffic pattern. Suite result: **2/5 PASS, 3/5 FAIL** (failures are latency threshold breaches only — zero crashes).
 
-| Test | Scenario | VUs | Duration | P95 | P99 | Bets OK / Fail | INTERNAL_ERRORs | Result |
-|------|----------|-----|----------|-----|-----|----------------|-----------------|--------|
-| 01 | Quiet hours baseline | 50 | 4 min | **6 ms** | 12 ms | 781 / 0 | 0 | ✓ PASS |
-| 02 | Evening peak (multi-chain) | 0→400 | 5 min | **8 ms** | 24 ms | 1,970 / 13 | 0 | ✓ PASS |
-| 03 | Traffic spike (80→900 VUs in 50s) | 900 peak | 3.5 min | 33 ms | 255 ms | 68,463 / 20,630 | 0 | SLO miss† |
-| 04 | Whale mixer (3-tier population) | 250 | 5 min | 56 ms | 385 ms | 1,759 / 233 | 0 | SLO miss‡ |
-| 05 | Peak crush (Black Friday) | 0→1000 | 6.75 min | 342 ms | 593 ms | 356,000 / 87,097 | 0 | SLO miss§ |
+
+| Test | Scenario                          | VUs      | Duration | P95      | P99    | Bets OK / Fail   | INTERNAL_ERRORs | Result    |
+| ---- | --------------------------------- | -------- | -------- | -------- | ------ | ---------------- | --------------- | --------- |
+| 01   | Quiet hours baseline              | 50       | 4 min    | **6 ms** | 12 ms  | 781 / 0          | 0               | ✓ PASS    |
+| 02   | Evening peak (multi-chain)        | 0→400    | 5 min    | **8 ms** | 24 ms  | 1,970 / 13       | 0               | ✓ PASS    |
+| 03   | Traffic spike (80→900 VUs in 50s) | 900 peak | 3.5 min  | 33 ms    | 255 ms | 68,463 / 20,630  | 0               | SLO miss† |
+| 04   | Whale mixer (3-tier population)   | 250      | 5 min    | 56 ms    | 385 ms | 1,759 / 233      | 0               | SLO miss‡ |
+| 05   | Peak crush (Black Friday)         | 0→1000   | 6.75 min | 342 ms   | 593 ms | 356,000 / 87,097 | 0               | SLO miss§ |
+
 
 All "Fail" bet counts are `INSUFFICIENT_BALANCE` rejections — wallets exhaust their 10 ETH starting balance across a sequential suite run. This is a test-infrastructure artifact: the Lua escrow script is working correctly (rejecting underfunded bets instantly). Zero unexpected errors or INTERNAL_ERRORs at any load level.
 
@@ -133,7 +253,7 @@ The production Solana layer requires decisions that differ meaningfully from the
 
 The Trade Router stub (Rust) represents the Jupiter + Jito integration boundary — liquidity aggregation across Solana DEXes with MEV-protected bundle submission. Rust's `tokio` multi-threaded async runtime allows parallel route computation across candidate swap paths in the ~50–200ms window relevant for MEV execution, which the Node.js event loop model cannot match at the same concurrency level.
 
-Full rationale: [`documentation/solana-production-notes.md`](documentation/solana-production-notes.md)
+Full rationale: `[documentation/solana-production-notes.md](documentation/solana-production-notes.md)`
 
 ---
 
@@ -183,13 +303,14 @@ docker compose up -d
 
 > **First boot takes 60–90 seconds.** Kafka initialization completes last — wait until `docker compose ps` shows all services healthy before opening the UI.
 
-| URL | Description |
-|-----|-------------|
-| http://localhost | Game UI — EIP-712 wallet auth, real-time WebSocket bets |
-| http://localhost/?demo=1 | Demo mode — Hardhat account #1, pre-funded on local Anvil |
-| http://localhost/dashboard.html | Frontend stats panel (WebSocket-connected) |
-| http://localhost:3001 | Grafana — auto-provisioned observability dashboard |
-| http://localhost:9090 | Prometheus — raw metrics scrape endpoint |
+
+| URL                                                                | Description                                               |
+| ------------------------------------------------------------------ | --------------------------------------------------------- |
+| [http://localhost](http://localhost)                               | Game UI — localhost defaults to Hardhat account #1 (pre-funded on local Anvil) |
+| [http://localhost/dashboard.html](http://localhost/dashboard.html) | Frontend stats panel (WebSocket-connected)                |
+| [http://localhost:3001](http://localhost:3001)                     | Grafana — auto-provisioned observability dashboard        |
+| [http://localhost:9090](http://localhost:9090)                     | Prometheus — raw metrics scrape endpoint                  |
+
 
 ### Local Development
 
@@ -240,21 +361,23 @@ Remove or set `TEST_MODE: "false"` before any public deployment.
 
 ## Documentation
 
-| Document | Contents |
-|----------|----------|
-| [`architecture-overview.md`](documentation/architecture-overview.md) | Full service map, data flows, design decisions |
-| [`blockchain-flows.md`](documentation/blockchain-flows.md) | Sequence diagrams: deposit, withdrawal, trade |
-| [`kafka-event-topology.md`](documentation/kafka-event-topology.md) | Topic definitions, partition strategy, consumer groups |
-| [`database-schema.md`](documentation/database-schema.md) | ERD, table definitions, Redis key schema, escrow model |
-| [`solana-production-notes.md`](documentation/solana-production-notes.md) | Solana-specific production requirements: USDC/ATA/commitment/RPC/MEV |
+
+| Document                                                                 | Contents                                                             |
+| ------------------------------------------------------------------------ | -------------------------------------------------------------------- |
+| `[architecture-overview.md](documentation/architecture-overview.md)`     | Full service map, data flows, design decisions                       |
+| `[blockchain-flows.md](documentation/blockchain-flows.md)`               | Sequence diagrams: deposit, withdrawal, trade                        |
+| `[kafka-event-topology.md](documentation/kafka-event-topology.md)`       | Topic definitions, partition strategy, consumer groups               |
+| `[database-schema.md](documentation/database-schema.md)`                 | ERD, table definitions, Redis key schema, escrow model               |
+| `[solana-production-notes.md](documentation/solana-production-notes.md)` | Solana-specific production requirements: USDC/ATA/commitment/RPC/MEV |
+
 
 ---
 
-
-## Production Readiness 
+## Production Readiness
 
 - Designed for Ansible deployment with Vault-injected secrets
 - MEV protection architecture documented (Jito/Flashbots) for future Trade Router (Rust stub present)
 - Event-Driven Ansible (EDA) rulebook documented for alert-driven Kafka broker remediation
 - Node.js `cluster` module used in API Gateway for multi-core utilisation
 - Structured logging (Winston) with per-service app/audit/security log streams, daily rotation
+

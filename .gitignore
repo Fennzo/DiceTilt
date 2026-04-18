@@ -1,16 +1,44 @@
+# Dependencies & Build
 node_modules/
 dist/
+/logs/
+results/
+.tsbuildinfo
+
+# Secrets & Env
 .env
+.env.*
+*.key
+*.pem
+.secrets
+MASTER_PROMPT.md
+
+# Logs & OS
 *.log
 .DS_Store
 Thumbs.db
-claude-code-router/
-/logs/
-results/
-results/
-.claude/                                                                                                                                                                                                                
-.vscode/                                                                                                                                                                                                                
+docs/
+
+# IDEs & Tools
+.claude/
+.vscode/
 .cursor/
+.idea/
+*.iml
 .mermaid-validate/
+claude-code-router/
+skillkit.yaml
+everything-claude-code
+
+# Smart Contracts
+out/
+artifacts/
+cache/
+typechain-types/
+
+# Testing
+coverage/
+.nyc_output/
+
+# Scripts
 scripts/validate-mermaid.js
-MASTER_PROMPT.md

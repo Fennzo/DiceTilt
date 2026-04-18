@@ -14,7 +14,11 @@ export const config = {
   kafkaGroupId: process.env['KAFKA_GROUP_ID'] ?? 'evm-payout-group',
   evmRpcUrl: process.env.EVM_RPC_URL || 'http://127.0.0.1:8545',
   treasuryAddress: getTreasuryAddress(),
-  privateKey: process.env.TREASURY_OWNER_PRIVATE_KEY || '',
+  privateKey: (() => {
+    const k = process.env.TREASURY_OWNER_PRIVATE_KEY;
+    if (!k) throw new Error('TREASURY_OWNER_PRIVATE_KEY is required');
+    return k;
+  })(),
   payoutMaxRetries: parseInt(process.env['PAYOUT_MAX_RETRIES'] ?? '20', 10),
   payoutMutexSpinMs: parseInt(process.env['PAYOUT_MUTEX_SPIN_MS'] ?? '50', 10),
   metricsPort: parseInt(process.env['METRICS_PORT'] ?? '3020', 10),

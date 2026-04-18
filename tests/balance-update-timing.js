@@ -342,7 +342,7 @@ async function testDepositBalanceUpdateViaWs() {
   //   (b) No spurious BALANCE_UPDATE is received without a triggering event
   //
   // A full end-to-end deposit test (evm-listener → Kafka → ledger-consumer → WS)
-  // can be run manually: open /?demo=1 and press Deposit — the balance should not
+  // can be run manually: open / and press Deposit — the balance should not
   // change until the BALANCE_UPDATE WS message arrives (verified by the depositPending
   // flag added to the frontend).
 

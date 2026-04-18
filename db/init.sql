@@ -26,11 +26,11 @@ CREATE TABLE IF NOT EXISTS wallets (
                           REFERENCES users(id) ON DELETE CASCADE,
     chain             VARCHAR(20)   NOT NULL,
     currency          VARCHAR(10)   NOT NULL,
-    balance           NUMERIC(30,8) NOT NULL DEFAULT 0,
+    balance           NUMERIC(40,18) NOT NULL DEFAULT 0,
     -- C3/H6 — Escrow model: tracks funds currently held in active bets.
     -- Live escrow state is authoritative in Redis; this column is updated
     -- by the Ledger Consumer for audit/reconciliation purposes.
-    balance_escrowed  NUMERIC(30,8) NOT NULL DEFAULT 0,
+    balance_escrowed  NUMERIC(40,18) NOT NULL DEFAULT 0,
     current_nonce     INTEGER       NOT NULL DEFAULT 0,
     wallet_address    VARCHAR(100)  NOT NULL,
     created_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
@@ -114,7 +114,7 @@ CREATE TABLE IF NOT EXISTS deposits (
     user_id        UUID          NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     chain          VARCHAR(20)   NOT NULL,
     currency       VARCHAR(10)   NOT NULL,
-    amount         NUMERIC(30,8) NOT NULL,
+    amount         NUMERIC(40,18) NOT NULL,
     wallet_address VARCHAR(100)  NOT NULL,
     tx_hash        VARCHAR(100)  NOT NULL,
     block_number   BIGINT        NOT NULL,
@@ -135,12 +135,13 @@ CREATE TABLE IF NOT EXISTS withdrawals (
     user_id        UUID          NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     chain          VARCHAR(20)   NOT NULL,
     currency       VARCHAR(10)   NOT NULL,
-    amount         NUMERIC(30,8) NOT NULL,
+    amount         NUMERIC(40,18) NOT NULL,
     to_address     VARCHAR(100)  NOT NULL,
     tx_hash        VARCHAR(100)  NOT NULL,
     completed_at   TIMESTAMPTZ   NOT NULL,
     CONSTRAINT chk_withdrawals_chain_valid CHECK (chain IN ('ethereum', 'solana')),
     CONSTRAINT chk_withdrawals_currency_valid CHECK (currency IN ('ETH', 'SOL', 'USDC', 'USDT')),
+    CONSTRAINT chk_withdrawals_amount_positive CHECK (amount > 0),
     CONSTRAINT uq_withdrawals_tx_hash UNIQUE (tx_hash)
 );
 
@@ -155,8 +156,8 @@ CREATE TABLE IF NOT EXISTS transactions (
                       REFERENCES users(id) ON DELETE RESTRICT,
     chain         VARCHAR(20)   NOT NULL,
     currency      VARCHAR(10)   NOT NULL,
-    wager_amount  NUMERIC(30,8) NOT NULL,
-    payout_amount NUMERIC(30,8) NOT NULL DEFAULT 0,
+    wager_amount  NUMERIC(40,18) NOT NULL,
+    payout_amount NUMERIC(40,18) NOT NULL DEFAULT 0,
     game_result   INTEGER       NOT NULL,
     client_seed   VARCHAR(64)   NOT NULL,
     nonce_used    INTEGER       NOT NULL,

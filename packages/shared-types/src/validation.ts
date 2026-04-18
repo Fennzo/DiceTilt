@@ -36,7 +36,7 @@ const EvmAddressSchema = z
 
 export const AuthVerifyRequestSchema = z.object({
   walletAddress: EvmAddressSchema,
-  signature: z.string().min(1),
+  signature: z.string().regex(/^0x[a-fA-F0-9]{130}$/, 'Invalid signature format'),
   // The nonce issued by /api/v1/auth/challenge — must be signed by the wallet.
   // Prevents replay attacks: signature binds to this one-time server-issued value.
   nonce: z.string().uuid('Nonce must be a valid UUID'),
@@ -60,10 +60,52 @@ export const AuthMessageSchema = z.object({
 
 export const PfCalculateRequestSchema = z.object({
   clientSeed: z.string().min(1).max(64),
-  nonce: z.number().int().nonnegative(),
+  nonce: z.number().int().min(0).max(1000000),
   serverSeed: z.string().length(64),
 });
 
 export const PfRotateSeedRequestSchema = z.object({
   currentServerSeed: z.string().length(64),
 });
+
+export const ServerMessageSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('BET_RESULT'),
+    betId: z.string().uuid(),
+    gameResult: z.number(),
+    gameHash: z.string(),
+    nonce: z.number(),
+    wagerAmount: z.number(),
+    payoutAmount: z.number(),
+    target: z.number(),
+    direction: BetDirectionSchema,
+    multiplier: z.number(),
+    newBalance: z.number(),
+    chain: ChainSchema,
+    currency: CurrencySchema,
+    timestamp: z.string().datetime(),
+  }),
+  z.object({
+    type: z.literal('BALANCE_UPDATE'),
+    balance: z.number(),
+    chain: ChainSchema,
+    currency: CurrencySchema,
+  }),
+  z.object({
+    type: z.literal('WITHDRAWAL_COMPLETED'),
+    withdrawalId: z.string().uuid(),
+    chain: ChainSchema,
+    currency: CurrencySchema,
+    txHash: z.string(),
+    amount: z.string(),
+  }),
+  z.object({
+    type: z.literal('ERROR'),
+    code: z.string(),
+    message: z.string(),
+  }),
+  z.object({ type: z.literal('PONG') }),
+  z.object({ type: z.literal('SESSION_REVOKED') }),
+  z.object({ type: z.literal('AUTH_OK') }),
+]);
+

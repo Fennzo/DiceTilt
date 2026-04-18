@@ -8,15 +8,27 @@ function getTreasuryContractAddress(): string {
   return '';
 }
 
+// M1 — fail closed on missing secrets in non-test environments. TEST_MODE=true
+// (k6 / local dev / demo) still accepts the known dev values so existing
+// workflows don't need secret injection, but any other deploy must provide
+// real secrets. Matches the fail-fast pattern used for HOUSE_EDGE_PCT below.
+const _testMode = process.env['TEST_MODE'] === 'true';
+function requireSecret(name: string, devFallback: string): string {
+  const v = process.env[name];
+  if (v && v.length > 0) return v;
+  if (_testMode) return devFallback;
+  throw new Error(`${name} is required when TEST_MODE is not 'true'`);
+}
+
 export const config = {
   port: parseInt(process.env['API_PORT'] ?? '3000', 10),
-  jwtSecret: process.env['JWT_SECRET'] ?? 'dev-secret',
-  pseudonymSecret: process.env['PSEUDONYM_SECRET'] ?? 'dev-pseudonym-secret-not-for-production',
+  jwtSecret: requireSecret('JWT_SECRET', 'dev-secret'),
+  pseudonymSecret: requireSecret('PSEUDONYM_SECRET', 'dev-pseudonym-secret-not-for-production'),
   pseudonymKeyVersion: process.env['PSEUDONYM_KEY_VERSION'] ?? '1',
   redisUri: process.env['REDIS_URI'] ?? 'redis://localhost:6379',
   kafkaBrokers: (process.env['KAFKA_BROKERS'] ?? 'localhost:29092').split(','),
   pfWorkerUrl: process.env['PF_WORKER_URL'] ?? 'http://localhost:3001',
-  pfAuthToken: process.env['PF_AUTH_TOKEN'] ?? 'dicetilt-internal-pf-token',
+  pfAuthToken: requireSecret('PF_AUTH_TOKEN', 'dicetilt-internal-pf-token'),
   dbUrl: process.env['DATABASE_URL'] ?? 'postgresql://dicetilt:dicetilt_dev_pass@localhost:5432/dicetilt',
   defaultEthBalance: process.env['DEFAULT_ETH_BALANCE'] ?? '10.00000000',
   defaultSolBalance: process.env['DEFAULT_SOL_BALANCE'] ?? '10.00000000',
@@ -31,6 +43,8 @@ export const config = {
   maxChallengeStoreSize: parseInt(process.env['MAX_CHALLENGE_STORE_SIZE'] ?? '10000', 10),
   challengeTtlMs: parseInt(process.env['CHALLENGE_TTL_MS'] ?? '300000', 10),          // 5 minutes
   challengeCleanupIntervalMs: parseInt(process.env['CHALLENGE_CLEANUP_MS'] ?? '60000', 10),
+  authRateLimitWindowSec: parseInt(process.env['AUTH_RATE_LIMIT_WINDOW_SEC'] ?? '60', 10),
+  authRateLimitMax: parseInt(process.env['AUTH_RATE_LIMIT_MAX'] ?? '10', 10),
 
   // Database pool
   dbPoolMax: parseInt(process.env['DB_POOL_MAX'] ?? '20', 10),
@@ -50,6 +64,8 @@ export const config = {
   // Bet / game
   betRateLimitWindowSec: parseInt(process.env['BET_RATE_LIMIT_WINDOW_SEC'] ?? '1', 10),
   betRateLimitMax: parseInt(process.env['BET_RATE_LIMIT_MAX'] ?? '30', 10),
+  withdrawRateLimitWindowSec: parseInt(process.env['WITHDRAW_RATE_LIMIT_WINDOW_SEC'] ?? '60', 10),
+  withdrawRateLimitMax: parseInt(process.env['WITHDRAW_RATE_LIMIT_MAX'] ?? '5', 10),
   houseEdgePct: parseFloat(process.env['HOUSE_EDGE_PCT'] ?? '1'),                    // 1% → payout = (100 - houseEdgePct) / winChance
 
   // Credit retry (win payout fire-and-forget)

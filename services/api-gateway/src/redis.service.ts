@@ -142,6 +142,17 @@ export const redisSub = new Redis(config.redisUri, {
   enableReadyCheck: false,
 });
 
+// M2 — Defence-in-depth: allowlist for chain and currency.
+// Prevents an attacker from manipulating Redis key structure via raw API calls.
+const ALLOWED_CHAINS = ['ethereum', 'solana'];
+const ALLOWED_CURRENCIES = ['ETH', 'SOL', 'USDC', 'USDT'];
+
+function validateParams(chain: string, currency: string): void {
+  if (!ALLOWED_CHAINS.includes(chain) || !ALLOWED_CURRENCIES.includes(currency)) {
+    throw new Error(`INVALID_PARAMS: chain=${chain}, currency=${currency}`);
+  }
+}
+
 // Without these handlers, ioredis emits an 'error' event that — if no listener is
 // registered — crashes the Node.js process via the EventEmitter default behaviour.
 // ioredis handles reconnection internally; we only need to log and stay alive.
@@ -162,6 +173,7 @@ export async function atomicEscrowBet(
   currency: string,
   wagerAmount: string,
 ): Promise<EscrowResult> {
+  validateParams(chain, currency);
   const balanceKey = `user:${userId}:balance:${chain}:${currency}`;
   const escrowKey  = `user:${userId}:escrowed:${chain}:${currency}`;
   const nonceKey   = `user:${userId}:nonce:${chain}:${currency}`;
@@ -189,6 +201,7 @@ export async function atomicSettleBet(
   wagerAmount: string,
   payoutAmount: string,
 ): Promise<void> {
+  validateParams(chain, currency);
   const balanceKey = `user:${userId}:balance:${chain}:${currency}`;
   const escrowKey  = `user:${userId}:escrowed:${chain}:${currency}`;
   await redis.eval(SETTLE_BET_LUA, 2, balanceKey, escrowKey, wagerAmount, payoutAmount);
@@ -202,6 +215,7 @@ export async function atomicReleaseEscrow(
   currency: string,
   wagerAmount: string,
 ): Promise<void> {
+  validateParams(chain, currency);
   const balanceKey = `user:${userId}:balance:${chain}:${currency}`;
   const escrowKey  = `user:${userId}:escrowed:${chain}:${currency}`;
   await redis.eval(RELEASE_ESCROW_LUA, 2, balanceKey, escrowKey, wagerAmount);
@@ -219,6 +233,7 @@ export async function atomicBalanceDeduct(
   currency: string,
   amount: string,
 ): Promise<WithdrawDeductResult> {
+  validateParams(chain, currency);
   const balanceKey = `user:${userId}:balance:${chain}:${currency}`;
   const result = (await redis.eval(WITHDRAW_DEDUCT_LUA, 1, balanceKey, amount)) as [number, string];
   return { success: result[0] === 1, newBalance: result[1] };
@@ -230,6 +245,7 @@ export async function atomicBalanceCredit(
   currency: string,
   amount: string,
 ): Promise<string> {
+  validateParams(chain, currency);
   const balanceKey = `user:${userId}:balance:${chain}:${currency}`;
   return (await redis.eval(WITHDRAW_CREDIT_LUA, 1, balanceKey, amount)) as string;
 }
@@ -239,6 +255,7 @@ export async function getUserEscrowed(
   chain: string,
   currency: string,
 ): Promise<string | null> {
+  validateParams(chain, currency);
   return redis.get(`user:${userId}:escrowed:${chain}:${currency}`);
 }
 
@@ -290,6 +307,7 @@ export async function getUserBalance(
   chain: string,
   currency: string,
 ): Promise<string | null> {
+  validateParams(chain, currency);
   return redis.get(`user:${userId}:balance:${chain}:${currency}`);
 }
 
@@ -298,6 +316,7 @@ export async function getUserNonce(
   chain: string,
   currency: string,
 ): Promise<number> {
+  validateParams(chain, currency);
   const val = await redis.get(`user:${userId}:nonce:${chain}:${currency}`);
   return val ? parseInt(val, 10) : 0;
 }

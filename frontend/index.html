@@ -643,14 +643,11 @@
   </a>
 
   <div id="demo-banner" style="display:none; align-items:center;">
-    DEMO — Hardhat #1 &nbsp;·&nbsp;
+    LOCALHOST — Hardhat #1 &nbsp;·&nbsp;
     <span id="demo-wallet-addr" style="color:#4ade80;"></span>
-    &nbsp;·&nbsp;
-    <a href="/" style="color:#4ade80; text-decoration:underline; cursor:pointer;">Exit Demo</a>
   </div>
 
   <nav class="header-nav">
-    <a href="?demo=1">Demo (pre-funded)</a>
     <a href="dashboard.html">Dashboard</a>
   </nav>
 </div>
@@ -971,9 +968,10 @@
   }
 
   // ── Auth ────────────────────────────────────────────────────────────────
-  // Demo mode: only on localhost + ?demo=1 — prevents test mnemonic from being used on production.
+  // Localhost mode uses Hardhat #1 by default for pre-funded deposit testing.
+  // Non-localhost domains always use stored/random wallets.
   const isLocalhost = () => ['localhost','127.0.0.1'].includes(location.hostname) || location.hostname.endsWith('.local');
-  const DEMO_MODE = isLocalhost() && new URLSearchParams(location.search).get('demo') === '1';
+  const DEMO_MODE = isLocalhost();
   try {
     let isNewWallet = false;
     if (DEMO_MODE) {
@@ -1021,8 +1019,11 @@
       }).catch(() => {}); // fire-and-forget — non-critical for auth flow
     }
   } catch (e) {
-    document.getElementById('loading').innerHTML =
-      `<div style="color:var(--loss);font-family:'Rubik',sans-serif;font-size:1.1rem;font-weight:700;">Auth failed: ${e.message}</div>`;
+    const loadingEl = document.getElementById('loading');
+    const errEl = document.createElement('div');
+    errEl.style.cssText = "color:var(--loss);font-family:'Rubik',sans-serif;font-size:1.1rem;font-weight:700;";
+    errEl.textContent = 'Auth failed: ' + e.message;
+    loadingEl.replaceChildren(errEl);
     return;
   }
 
@@ -1043,7 +1044,8 @@
     // Fix #8 — do not pass the JWT in the URL query string.
     // URL tokens appear in Nginx access logs and browser history.
     // Auth happens in the first WebSocket frame instead.
-    ws = new WebSocket(`ws://${location.host}/ws`);
+    const wsProtocol = location.protocol === 'https:' ? 'wss' : 'ws';
+    ws = new WebSocket(`${wsProtocol}://${location.host}/ws`);
     ws.onopen = () => {
       ws.send(JSON.stringify({ type: 'AUTH', token: jwt }));
     };
@@ -1157,7 +1159,10 @@
     }
     const display = document.getElementById('result-display');
     display.className = 'result-display loss-state';
-    display.innerHTML = `<div style="color:var(--loss);font-family:'Rubik',sans-serif;font-weight:700;">${msg.code}: ${msg.message}</div>`;
+    const errDiv = document.createElement('div');
+    errDiv.style.cssText = "color:var(--loss);font-family:'Rubik',sans-serif;font-weight:700;";
+    errDiv.textContent = msg.code + ': ' + msg.message;
+    display.replaceChildren(errDiv);
     setMascot('loss');
   }
 
@@ -1289,17 +1294,36 @@
 
   function renderHistory() {
     const tbody = document.querySelector('#history-table tbody');
-    tbody.innerHTML = '';
+    tbody.replaceChildren();
     for (const b of [...betHistory].reverse()) {
       const tr = document.createElement('tr');
       const isWin = b.payout > 0;
-      tr.innerHTML = `
-        <td>${b.nonce}</td>
-        <td>${b.target}</td>
-        <td>${b.direction}</td>
-        <td class="${isWin ? 'win' : 'loss'}">${b.result}</td>
-        <td class="${isWin ? 'win' : 'loss'}">${isWin ? '+' + b.payout.toFixed(4) : '0'}</td>
-        <td>${b.verified === null ? '—' : b.verified ? '<span class="verified">✓</span>' : '<span style="color:var(--loss)">✗</span>'}</td>`;
+      const addCell = (text, cls) => {
+        const td = document.createElement('td');
+        if (cls) td.className = cls;
+        td.textContent = text;
+        tr.appendChild(td);
+      };
+      addCell(b.nonce);
+      addCell(b.target);
+      addCell(b.direction);
+      addCell(b.result, isWin ? 'win' : 'loss');
+      addCell(isWin ? '+' + b.payout.toFixed(4) : '0', isWin ? 'win' : 'loss');
+      const verifiedTd = document.createElement('td');
+      if (b.verified === null) {
+        verifiedTd.textContent = '—';
+      } else if (b.verified) {
+        const span = document.createElement('span');
+        span.className = 'verified';
+        span.textContent = '✓';
+        verifiedTd.appendChild(span);
+      } else {
+        const span = document.createElement('span');
+        span.style.color = 'var(--loss)';
+        span.textContent = '✗';
+        verifiedTd.appendChild(span);
+      }
+      tr.appendChild(verifiedTd);
       tbody.appendChild(tr);
     }
   }
@@ -1339,6 +1363,9 @@
     const v = validateDwAmount();
     if (!v.valid) { setDwStatus(v.msg, 'err'); return; }
     const amount = getDwAmount();
+    if (selectedChain === 'solana' && selectedCurrency === 'SOL') {
+      setDwStatus('SOL is not available for demo deposit/withdrawal', 'err'); return;
+    }
     if (selectedCurrency !== 'ETH') {
       setDwStatus('On-chain deposit only supported for ETH in this demo.', 'err'); return;
     }
@@ -1390,6 +1417,9 @@
     const v = validateDwAmount();
     if (!v.valid) { setDwStatus(v.msg, 'err'); return; }
     const amount = getDwAmount();
+    if (selectedChain === 'solana' && selectedCurrency === 'SOL') {
+      setDwStatus('SOL is not available for demo deposit/withdrawal', 'err'); return;
+    }
     setDwBusy(true);
     setDwStatus('Requesting withdrawal of ' + amount + ' ' + selectedCurrency + '…', 'pending');
     try {

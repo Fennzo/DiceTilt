@@ -27,4 +27,5 @@ export const KAFKA_TOPICS = {
   BET_RESOLVED_DLQ: 'BetResolved-DLQ',
   DEPOSIT_RECEIVED_DLQ: 'DepositReceived-DLQ',
   WITHDRAWAL_COMPLETED_DLQ: 'WithdrawalCompleted-DLQ',
+  ESCROW_STUCK_DLQ: 'EscrowStuck-DLQ',
 } as const;

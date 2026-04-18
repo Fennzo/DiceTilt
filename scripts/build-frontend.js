@@ -32,8 +32,13 @@ if (!existsSync(distDir)) mkdirSync(distDir, { recursive: true });
 let html = readFileSync(join(frontendDir, 'index.html'), 'utf8');
 
 // Replace DEMO_MODE so it is always false in production
+const demoModePattern = /const DEMO_MODE = isLocalhost\(\);/;
+if (!demoModePattern.test(html)) {
+  console.error('build-frontend: could not find DEMO_MODE declaration to strip — pattern may have changed');
+  process.exit(1);
+}
 html = html.replace(
-  /const DEMO_MODE = isLocalhost\(\) && new URLSearchParams\(location\.search\)\.get\('demo'\) === '1';/,
+  demoModePattern,
   "const DEMO_MODE = false; // stripped in production — demo mnemonic never used",
 );
 

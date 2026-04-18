@@ -47,6 +47,16 @@ export interface WithdrawalCompletedEvent {
   completed_at: string;
 }
 
+export interface EscrowStuckEvent {
+  user_id: string;
+  chain: Chain;
+  currency: Currency;
+  wager_amount: string;
+  payout_amount: string;
+  failed_at: string;
+  error: string;
+}
+
 export interface TradeExecutedEvent {
   trade_id: string;
   user_id: string;

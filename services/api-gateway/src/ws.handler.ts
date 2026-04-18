@@ -8,6 +8,7 @@ import {
   WebSocketErrorCode,
   type BetResolvedEvent,
   type ServerMessage,
+  ServerMessageSchema,
 } from '@dicetilt/shared-types';
 import { config } from './config.js';
 import {
@@ -21,7 +22,8 @@ import {
   type EscrowResult,
 } from './redis.service.js';
 import { pfCalculate } from './pf.client.js';
-import { produceBetResolved } from './kafka.producer.js';
+import { produceBetResolved, produceEscrowStuck } from './kafka.producer.js';
+import { Chain, Currency } from '@dicetilt/shared-types';
 import {
   betsTotal,
   betProcessingDuration,
@@ -34,6 +36,7 @@ import {
   rateLimitRedisErrors,
   redisErrorRejections,
   authFailures,
+  escrowStuckTotal,
 } from './metrics.js';
 import { createLoggers, pseudonymize } from '@dicetilt/logger';
 
@@ -84,12 +87,37 @@ async function settleBetAsync(
       return;
     } catch (err) {
       if (attempt === maxAttempts) {
+        escrowStuckTotal.inc();
+        security.error('Escrow stuck — settle retries exhausted, wager stranded', {
+          event: 'ESCROW_STUCK',
+          userId: pseudonymize(userId), wagerAmount, payoutAmount, chain, currency,
+          attempts: maxAttempts,
+          error: String(err),
+        });
         log.error('Bet settle failed after all retries', {
           event: 'REDIS_CREDIT_ERROR',
           userId: pseudonymize(userId), wagerAmount, payoutAmount, chain, currency,
           attempts: maxAttempts,
           error: String(err),
         });
+
+        // H7 — Publish compensating event to DLQ so stranded escrow can be manually reconciled.
+        produceEscrowStuck({
+          user_id: userId,
+          chain: chain as Chain,
+          currency: currency as Currency,
+          wager_amount: wagerAmount,
+          payout_amount: payoutAmount,
+          failed_at: new Date().toISOString(),
+          error: String(err),
+        }).catch((kafkaErr: unknown) => {
+          log.error('CRITICAL: Failed to publish to ESCROW_STUCK_DLQ', {
+            event: 'DLQ_PUBLISH_FAILED',
+            userId: pseudonymize(userId),
+            error: String(kafkaErr),
+          });
+        });
+
         return;
       }
       await new Promise((r) => setTimeout(r, config.creditRetryBaseMs * Math.pow(2, attempt - 1)));
@@ -426,14 +454,23 @@ function setupPubSub(): void {
     if (!sockets || sockets.size === 0) return;
 
     try {
-      JSON.parse(message);
+      const parsed = JSON.parse(message);
+      // M7 — Validate internal pub/sub payloads against the public ServerMessageSchema
+      // before forwarding. Prevents internal data leakage and malformed frames.
+      ServerMessageSchema.parse(parsed);
+
       for (const ws of sockets) {
         if (ws.readyState === ws.OPEN) {
           ws.send(message);
         }
       }
-    } catch {
-      // ignore malformed pub/sub messages
+    } catch (err) {
+      // ignore malformed or invalid pub/sub messages
+      log.warn('Pub/Sub message rejected — failed schema validation', {
+        event: 'WS_MSG_VALIDATION_FAILED',
+        channel,
+        error: String(err),
+      });
     }
   });
 }

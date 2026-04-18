@@ -2,10 +2,11 @@ import { Router, type Request, type Response, type Router as RouterType } from '
 import jwt from 'jsonwebtoken';
 import crypto from 'node:crypto';
 import { config } from './config.js';
-import { getServerSeed, getUserNonce, redis, checkSession } from './redis.service.js';
+import { getServerSeed, getUserNonce, redis, checkSession, checkRateLimit } from './redis.service.js';
 import { pfRotateSeed } from './pf.client.js';
 import { updateServerSeed, insertSeedCommitment, revealSeedInAudit } from './db.js';
 import { ChainSchema, CurrencySchema } from '@dicetilt/shared-types';
+import { rateLimitRejections } from './metrics.js';
 
 const router: RouterType = Router();
 
@@ -46,6 +47,15 @@ router.get('/api/pf/status', async (req: Request, res: Response) => {
   if (!userId) return;
   if (!(await checkActiveSession(userId, res))) return;
 
+  // Rate limit by IP for status checks.
+  const ip = req.ip || req.socket.remoteAddress || 'unknown';
+  const allowed = await checkRateLimit(ip, 'pf_status', config.authRateLimitWindowSec, config.authRateLimitMax);
+  if (!allowed) {
+    rateLimitRejections.inc({ limiter_type: 'pf_status' });
+    res.status(429).json({ error: 'TOO_MANY_REQUESTS' });
+    return;
+  }
+
   const chain = ChainSchema.safeParse(req.query['chain']);
   const currency = CurrencySchema.safeParse(req.query['currency']);
   if (!chain.success || !currency.success) {
@@ -68,6 +78,14 @@ router.post('/api/pf/rotate-seed', async (req: Request, res: Response) => {
   const userId = extractUserId(req, res);
   if (!userId) return;
   if (!(await checkActiveSession(userId, res))) return;
+
+  // Rate limit by User ID for seed rotation (heavy operation).
+  const allowed = await checkRateLimit(userId, 'pf_rotate', config.authRateLimitWindowSec, 5); // Max 5 rotations per minute
+  if (!allowed) {
+    rateLimitRejections.inc({ limiter_type: 'pf_rotate' });
+    res.status(429).json({ error: 'TOO_MANY_REQUESTS', message: 'Too many seed rotations — slow down' });
+    return;
+  }
 
   try {
     const currentSeed = await getServerSeed(userId);
