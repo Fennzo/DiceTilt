@@ -204,23 +204,7 @@ export function handleSummary(data) {
   const sloErr  = errRate < 0.005;
   const pass    = sloP95 && sloP99 && sloErr;
 
-  console.log('\n╔══════════════════════════════════════════════════════════════╗');
-  console.log('║          01 — BASELINE NORMAL (Quiet Hours 2–4 AM UTC)       ║');
-  console.log('╚══════════════════════════════════════════════════════════════╝');
-  console.log(`  Bets succeeded         : ${ok}`);
-  console.log(`  Bets total (attempts)  : ${total}`);
-  console.log(`  INSUFFICIENT_BALANCE   : ${insuf}  (expected — balance exhaustion)`);
-  console.log(`  Unexpected errors      : ${errors}`);
-  console.log(`  Throughput (approx)    : ${(ok / (4 * 60)).toFixed(1)} bets/sec`);
-  console.log('  ─────────────────────────────────────────────────────────────');
-  console.log(`  P95 e2e latency        : ${p95.toFixed(2)} ms  (SLO <25 ms)  ${sloP95 ? '✓ PASS' : '✗ FAIL'}`);
-  console.log(`  P99 e2e latency        : ${p99.toFixed(2)} ms  (SLO <50 ms)  ${sloP99 ? '✓ PASS' : '✗ FAIL'}`);
-  console.log(`  Unexpected error rate  : ${(errRate * 100).toFixed(3)}%       (SLO <0.5%)  ${sloErr ? '✓ PASS' : '✗ FAIL'}`);
-  console.log('  ─────────────────────────────────────────────────────────────');
-  console.log(`  Overall result         : ${pass ? '✓ ALL SLOs PASSED' : '✗ SLO FAILURE — investigate before peak tests'}`);
-  console.log('  Note: internal P95 (Prometheus dicetilt_bet_processing_duration_ms)');
-  console.log('        should be <20 ms — check Grafana dashboard for confirmation.');
-  console.log('══════════════════════════════════════════════════════════════════\n');
+  console.log(`\n01-baseline: bets=${ok} insuf=${insuf} err=${errors} P95=${p95.toFixed(1)}ms P99=${p99.toFixed(1)}ms errRate=${(errRate*100).toFixed(2)}% ${pass ? 'PASS' : 'FAIL'}`);
 
   return {
     'results/01-baseline-normal-summary.json': JSON.stringify(data, null, 2),

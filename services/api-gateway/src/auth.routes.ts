@@ -54,7 +54,6 @@ router.post('/api/v1/auth/verify', async (req: Request, res: Response) => {
     }
 
     const { walletAddress: rawAddress, signature, nonce } = parsed.data;
-    // Fix #9 — normalise to lowercase for consistent storage and comparison across all code paths
     const walletAddress = rawAddress.toLowerCase();
 
     // Atomically fetch-and-delete the challenge from Redis.
@@ -68,7 +67,6 @@ router.post('/api/v1/auth/verify', async (req: Request, res: Response) => {
       return;
     }
 
-    // Fix #1 — verify the signature is over the nonce, not the wallet address.
     // The wallet must sign the server-issued nonce, binding auth to this specific challenge.
     const recovered = ethers.verifyMessage(nonce, signature);
     if (recovered.toLowerCase() !== walletAddress) {
@@ -101,13 +99,7 @@ router.post('/api/v1/auth/verify', async (req: Request, res: Response) => {
       await createUserWithWallets(userId, serverSeed, walletAddress);
       // H2/M9 — Persist the initial seed commitment to the immutable audit log.
       const commitment = crypto.createHash('sha256').update(serverSeed).digest('hex');
-      try {
-        await insertSeedCommitment(userId, commitment);
-      } catch (commitmentErr) {
-        // Critical audit failure - user created but commitment missing
-        console.error(`CRITICAL: Seed commitment insertion failed for userId ${userId}`, commitmentErr);
-        throw commitmentErr; // Fail registration to maintain consistency
-      }
+      await insertSeedCommitment(userId, commitment);
       await initUserRedisState(userId, serverSeed, config.defaultEthBalance, config.defaultSolBalance);
     }
 
@@ -142,20 +134,12 @@ router.get('/api/v1/balance', async (req: Request, res: Response) => {
   }
 });
 
-// Fix #12 — use top-level fs import; the previous require() inside the handler
-// silently fails in ES module mode. Also removed the fragile host-header URL check.
 router.get('/api/v1/config', (_req: Request, res: Response) => {
   let addr = process.env.TREASURY_CONTRACT_ADDRESS || '';
   if (!addr) {
-    try {
-      const p = '/shared/treasury-addr';
-      if (existsSync(p)) addr = readFileSync(p, 'utf8').trim();
-    } catch (e) {
-      // Non-fatal: treasury address might not be provisioned yet in some environments
+    const p = '/shared/treasury-addr';
+    if (existsSync(p)) addr = readFileSync(p, 'utf8').trim();
     }
-  }
-  // PUBLIC_EVM_RPC_URL is the browser-reachable address (e.g. http://localhost:8545).
-  // EVM_RPC_URL is the Docker-internal address (http://evm-node:8545) — not reachable from browsers.
   res.json({
     treasuryContractAddress: addr || null,
     evmRpcUrl: process.env.PUBLIC_EVM_RPC_URL || process.env.EVM_RPC_URL || 'http://localhost:8545',
