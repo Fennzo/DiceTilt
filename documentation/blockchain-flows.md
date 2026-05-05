@@ -2,7 +2,7 @@
 
 **Audience:** Software architects, blockchain engineers.
 
-All deposit and withdrawal flows for both EVM (Hardhat/Anvil) and Solana (solana-test-validator) chains. Both chains are fully local — no internet, no real assets, no faucet requests. For the auth and game loop flows, see `sequence-diagrams.md`.
+All deposit and withdrawal flows for the EVM chain (implemented) and Solana chain (architectural/planned). The PoC runtime stack currently executes the full EVM pipeline; Solana flows are documented for future implementation. For the auth and game loop flows, see `sequence-diagrams.md`.
 
 ---
 
@@ -81,9 +81,9 @@ sequenceDiagram
 
 ---
 
-## Flow 2 — Solana Deposit (Anchor Program → Balance Update)
+## Flow 2 — Solana Deposit (Anchor Program → Balance Update, Planned)
 
-Mirrors Flow 1 using Solana-specific technology. The Anchor program emits `DepositEvent` which the Solana Listener decodes via the IDL and feeds into the same Kafka topic as the EVM Listener.
+Mirrors Flow 1 using Solana-specific technology. The Anchor program emits `DepositEvent` which the Solana Listener decodes via the IDL and feeds into the same Kafka topic as the EVM Listener. This flow is currently architectural/planned and not active in the running PoC stack.
 
 ```mermaid
 sequenceDiagram
@@ -126,9 +126,9 @@ sequenceDiagram
 
 ---
 
-## Flow 3 — Simultaneous Multi-Chain Deposits (Independence Proof)
+## Flow 3 — Simultaneous Multi-Chain Deposits (Independence Proof, Planned)
 
-Demonstrates that the EVM and Solana deposit pipelines are completely independent. A failure in one chain's listener does not block the other.
+Demonstrates that the EVM and Solana deposit pipelines are completely independent. A failure in one chain's listener does not block the other. This is an architectural target; only the EVM lane is currently active in runtime.
 
 ```mermaid
 sequenceDiagram
@@ -151,7 +151,7 @@ sequenceDiagram
     end
 
     Note over Kafka: Both messages land on the same DepositReceived topic
-    Note over LC: Ledger Consumer processes batches in parallel (eachBatch + Promise.all by user_id), 3 replicas = 3 partition processors
+    Note over LC: Ledger Consumer processes batches in parallel (eachBatch + Promise.all by user_id)
 
     LC->>Kafka: consume DepositReceived (ethereum, 0.5 ETH)
     LC->>LC: UPDATE wallets SET balance + 0.5 WHERE chain='ethereum'
@@ -245,7 +245,9 @@ sequenceDiagram
 
 ---
 
-## Flow 5 — Solana Withdrawal (API → Signed On-Chain Transaction)
+## Flow 5 — Solana Withdrawal (API → Signed On-Chain Transaction, Planned)
+
+This flow is architectural/planned and not active in the running PoC stack.
 
 ```mermaid
 sequenceDiagram
@@ -309,7 +311,7 @@ sequenceDiagram
 
 ## Flow 7 — Chain-Aware Withdrawal Routing Diagram
 
-Both payout workers subscribe to the same `WithdrawalRequested` Kafka topic but each only processes messages matching their chain. No hardcoded routing logic exists in the API Gateway.
+Both payout workers subscribe to the same `WithdrawalRequested` Kafka topic but each only processes messages matching their chain. In the current runtime stack, the EVM payout worker path is active and the Solana payout worker path is planned.
 
 ```mermaid
 flowchart TD
@@ -370,9 +372,9 @@ sequenceDiagram
 
 ---
 
-## Flow 9 — Solana Listener: Reconnection with Exponential Backoff
+## Flow 9 — Solana Listener: Reconnection with Exponential Backoff (Planned)
 
-Identical pattern to Flow 8 but using the Solana JSON-RPC WebSocket connection.
+Identical pattern to Flow 8 but using the Solana JSON-RPC WebSocket connection. This is currently architectural/planned and not active in runtime.
 
 ```mermaid
 sequenceDiagram

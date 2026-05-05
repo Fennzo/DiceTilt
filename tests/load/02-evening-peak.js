@@ -1,43 +1,8 @@
 /**
- * 02-evening-peak.js — Prime-time evening traffic with gradual ramp
- *
- * SCENARIO CONTEXT:
- *   Models MonkeyTilt during the 6–11 PM US East / EU afternoon overlap — the
- *   busiest window for crypto casinos. Traffic arrives in a smooth wave: users
- *   finish work, open the app in the evening, and leave when they go to bed.
- *
- *   Target scale: ~7,000–10,000 DAU (at 0.10–0.15 DAU:concurrent ratio →
- *   700–1,500 concurrent users). This test represents the lower end of that
- *   window — the ramp-up to, and hold at, evening peak.
- *
- *   Key differences from baseline:
- *     - Gradual 5–10 VU/sec ramp (not a step function) — matches organic user
- *       arrival, not a DDoS. Based on load testing best-practice research.
- *     - Multi-chain: 70% ETH bets, 30% SOL bets (realistic chain split)
- *     - Higher wagers: 0.01–0.2 ETH/SOL (regular evening players, not 4 AM casuals)
- *     - 400-VU peak sustained for 3 min, then tapers off (users go to sleep)
- *
- * TRAFFIC STAGES:
- *   Stage 1 (60s):  0→100 VUs     — early evening warm-up (dinner crowd arrives)
- *   Stage 2 (90s):  hold 100 VUs  — observe stability at initial load
- *   Stage 3 (60s):  100→300 VUs   — prime time ramp (~5 VU/sec)
- *   Stage 4 (90s):  hold 300 VUs  — prime time sustained
- *   Stage 5 (45s):  300→400 VUs   — late-evening peak (~2 VU/sec)
- *   Stage 6 (180s): hold 400 VUs  — peak plateau (prove system holds)
- *   Stage 7 (60s):  400→150 VUs   — post-peak taper (users go to sleep)
- *   Stage 8 (30s):  150→0 VUs     — wind down
- *   Total: ~9.5 min
- *
- * PROFILE:
- *   - Session: 8–15 bets per WS session, 1–3 s think time
- *   - Wager: random 0.01–0.2 ETH or SOL
- *   - Chain: Math.random() < 0.7 → ETH, else SOL
- *   - Wallets: 20 shared across VUs (realistic: same user on multiple devices)
- *
- * USAGE:
- *   k6 run tests/load/02-evening-peak.js
- *   k6 run --env BASE_URL=http://localhost:3000 --env WS_URL=ws://localhost:3000/ws \
- *           tests/load/02-evening-peak.js
+ * Scenario: evening prime-time ramp/plateau load with organic traffic wave.
+ * Profile: 0->400 ramping VUs, 8–15 bets/session, 1–3s think time, 70% ETH / 30% SOL.
+ * SLO: P95 < 35ms, P99 < 75ms, non-balance error rate < 1%.
+ * Usage: k6 run tests/load/02-evening-peak.js
  */
 
 import ws   from 'k6/ws';
@@ -199,7 +164,6 @@ export function handleSummary(data) {
   const errors = m['peak_bets_error']?.values?.count               ?? 0;
   const ok     = eth + sol;
   const total  = ok + insuf + errors;
-  const durSec = 305;  // Sum of all stage durations: 30+45+30+45+20+90+30+15
 
   const sloP95 = p95 < 35;
   const sloP99 = p99 < 75;
@@ -209,25 +173,7 @@ export function handleSummary(data) {
   const ethPct = total > 0 ? ((eth / (ok || 1)) * 100).toFixed(1) : '0';
   const solPct = total > 0 ? ((sol / (ok || 1)) * 100).toFixed(1) : '0';
 
-  console.log('\n╔══════════════════════════════════════════════════════════════╗');
-  console.log('║    02 — EVENING PEAK (Prime Time 6–11 PM, Multi-Chain)       ║');
-  console.log('╚══════════════════════════════════════════════════════════════╝');
-  console.log(`  ETH bets               : ${eth}  (${ethPct}%)`);
-  console.log(`  SOL bets               : ${sol}  (${solPct}%)`);
-  console.log(`  Total succeeded        : ${ok}`);
-  console.log(`  Total attempted        : ${total}`);
-  console.log(`  INSUFFICIENT_BALANCE   : ${insuf}`);
-  console.log(`  Unexpected errors      : ${errors}`);
-  console.log(`  Throughput (approx)    : ${(ok / durSec).toFixed(1)} bets/sec (avg over full ramp cycle)`);
-  console.log('  ─────────────────────────────────────────────────────────────');
-  console.log(`  P95 e2e latency        : ${p95.toFixed(2)} ms  (SLO <35 ms)  ${sloP95 ? '✓ PASS' : '✗ FAIL'}`);
-  console.log(`  P99 e2e latency        : ${p99.toFixed(2)} ms  (SLO <75 ms)  ${sloP99 ? '✓ PASS' : '✗ FAIL'}`);
-  console.log(`  Unexpected error rate  : ${(errR * 100).toFixed(3)}%       (SLO <1%)   ${sloErr ? '✓ PASS' : '✗ FAIL'}`);
-  console.log('  ─────────────────────────────────────────────────────────────');
-  console.log(`  Overall result         : ${pass ? '✓ ALL SLOs PASSED' : '✗ SLO FAILURE'}`);
-  console.log('  Stage guide: peak plateau (Stage 6, ~7:15–10:15 mark) should show');
-  console.log('  stable P95 with no upward drift — check Grafana timeseries.');
-  console.log('══════════════════════════════════════════════════════════════════\n');
+  console.log(`02-evening-peak ${pass ? 'PASS' : 'FAIL'} | bets=${ok}/${total} ETH=${ethPct}% SOL=${solPct}% P95=${p95.toFixed(1)}ms P99=${p99.toFixed(1)}ms errRate=${(errR * 100).toFixed(2)}%`);
 
   return {
     'results/02-evening-peak-summary.json': JSON.stringify(data, null, 2),

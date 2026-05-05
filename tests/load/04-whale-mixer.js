@@ -1,39 +1,8 @@
 /**
- * 04-whale-mixer.js — Realistic 3-tier user population mix
- *
- * SCENARIO CONTEXT:
- *   The most realistic single test in this suite. Uses k6 parallel scenarios
- *   to simultaneously simulate the three user archetypes that make up a real
- *   crypto casino user base, modelled on verified industry data:
- *
- *     ┌──────────────────┬──────────┬─────────────┬──────────────────────┐
- *     │ Tier             │ % Users  │ % Revenue   │ Behavior             │
- *     ├──────────────────┼──────────┼─────────────┼──────────────────────┤
- *     │ Casual           │ ~75%     │ ~10%        │ Small bets, slow pace│
- *     │ Regular          │ ~20%     │ ~20%        │ Medium bets, active  │
- *     │ High-roller      │ ~5%      │ ~70%        │ Large bets, fast     │
- *     └──────────────────┴──────────┴─────────────┴──────────────────────┘
- *   Source: verified whale % and revenue skew from mobile gaming studies
- *
- *   VU allocation (250 total):
- *     - casual_gamblers  : 150 VUs — 60% of connections
- *     - regular_players  :  80 VUs — 32% of connections
- *     - high_rollers     :  20 VUs —  8% of connections
- *
- *   Each tier runs its own exec function with different:
- *     - Think time (casual: 3–8s | regular: 0.8–2s | whale: 0.3–0.7s)
- *     - Wager size (casual: 0.001–0.02 | regular: 0.02–0.1 | whale: 0.1–0.3 ETH)
- *     - Bets per session (casual: 3–6 | regular: 8–15 | whale: 15–25)
- *     - Chain mix (casual: 100% ETH | regular: 80% ETH | whale: 60% ETH)
- *
- * METRICS:
- *   Per-tier latency trends so you can see if whale traffic crowds out casual
- *   user SLOs (the most realistic production concern).
- *
- * USAGE:
- *   k6 run tests/load/04-whale-mixer.js
- *   k6 run --env BASE_URL=http://localhost:3000 --env WS_URL=ws://localhost:3000/ws \
- *           tests/load/04-whale-mixer.js
+ * Scenario: mixed user-population load (casual, regular, whale) running in parallel.
+ * Profile: 250 total VUs (150/80/20 split) with tier-specific think time, wager size, and session length.
+ * SLO: whale P95/P99 < 25/50ms, regular < 35/75ms, casual < 50/100ms, overall error rate < 1%.
+ * Usage: k6 run tests/load/04-whale-mixer.js
  */
 
 import ws   from 'k6/ws';
@@ -282,11 +251,8 @@ export function handleSummary(data) {
   const errR  = rt('mixer_bet_error_rate_overall');
   const connF = cnt('mixer_ws_connect_fail');
 
-  console.log('\n╔══════════════════════════════════════════════════════════════╗');
-  console.log('║         04 — WHALE MIXER (3-Tier Population, 250 VUs)        ║');
-  console.log('╚══════════════════════════════════════════════════════════════╝');
-
   let allPass = true;
+  const tierSummaries = [];
   for (const t of tiers) {
     const p95   = pct(t.durKey, 95);
     const p99   = pct(t.durKey, 99);
@@ -297,24 +263,11 @@ export function handleSummary(data) {
     const pass99 = p99 < t.sloP99;
     if (!pass95 || !pass99) allPass = false;
 
-    console.log(`\n  ┌─ ${t.name.toUpperCase().padEnd(8)} tier ───────────────────────────────────────────┐`);
-    console.log(`  │  Bets succeeded  : ${ok}`);
-    console.log(`  │  Errors          : ${err}  |  INSUFFICIENT_BALANCE: ${insuf}`);
-    console.log(`  │  P95 latency     : ${p95.toFixed(2)} ms  (SLO <${t.sloP95} ms)  ${pass95 ? '✓' : '✗'}`);
-    console.log(`  │  P99 latency     : ${p99.toFixed(2)} ms  (SLO <${t.sloP99} ms)  ${pass99 ? '✓' : '✗'}`);
-    console.log(`  └${'─'.repeat(58)}┘`);
+    tierSummaries.push(`${t.name}=P95:${p95.toFixed(1)}ms/P99:${p99.toFixed(1)}ms ok:${ok} err:${err} insuf:${insuf}`);
   }
 
   if (errR >= 0.01) allPass = false;
-
-  console.log(`\n  Overall error rate   : ${(errR * 100).toFixed(3)}%  (SLO <1%)  ${errR < 0.01 ? '✓ PASS' : '✗ FAIL'}`);
-  console.log(`  WS connect fails     : ${connF}`);
-  console.log('  ─────────────────────────────────────────────────────────────');
-  console.log(`  Overall result       : ${allPass ? '✓ ALL SLOs PASSED' : '✗ SLO FAILURE'}`);
-  console.log('  Key insight: if whale P95 is much lower than casual P95,');
-  console.log('  the system is fair across user tiers. A gap >2× suggests');
-  console.log('  casual users are being deprioritized under concurrent whale load.');
-  console.log('══════════════════════════════════════════════════════════════════\n');
+  console.log(`04-whale-mixer ${allPass ? 'PASS' : 'FAIL'} | errRate=${(errR * 100).toFixed(2)}% wsFail=${connF} | ${tierSummaries.join(' | ')}`);
 
   return {
     'results/04-whale-mixer-summary.json': JSON.stringify(data, null, 2),

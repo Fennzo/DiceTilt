@@ -1,45 +1,8 @@
 /**
- * 03-traffic-spike.js — Viral moment / promotion flash spike
- *
- * SCENARIO CONTEXT:
- *   Models what happens when a MonkeyTilt influencer posts a referral code, a
- *   whale streams a big win, or a limited-bonus event activates: hundreds of
- *   new users flood in within 30–60 seconds. This is the pattern that breaks
- *   systems that size only for sustained load.
- *
- *   Research grounding:
- *     - "Event-driven spikes are so short and sharp that elastic scaling alone
- *       won't cut it" — CockroachDB sports-betting architecture post
- *     - Tournament finales / lottery draws: <60 s spike duration
- *     - Aggressive ramp rate: 15–20 VU/sec (upper end of realistic range)
- *
- * TRAFFIC STAGES:
- *   Stage 1 (60s):   0→80 VUs     — normal pre-spike traffic (base load)
- *   Stage 2 (30s):   hold 80 VUs  — brief stability window before spike
- *   Stage 3 (50s):   80→900 VUs   — SPIKE: 16.4 VU/sec (viral/promotion burst)
- *   Stage 4 (120s):  hold 900 VUs — spike sustained (promotion window open)
- *   Stage 5 (60s):   900→200 VUs  — spike abates (FOMO wave passes)
- *   Stage 6 (60s):   hold 200 VUs — elevated post-spike traffic lingers
- *   Stage 7 (30s):   200→0 VUs    — wind down
- *   Total: ~7 min
- *
- * WHY THIS IS HARD:
- *   - Connection pool (db.ts) must absorb 820 new WS upgrades within 50 s
- *   - Redis pub/sub has 820 new subscriptions land simultaneously
- *   - Kafka producer queue can fill if the batch consumer can't keep up
- *   - The optimized pool (max:20, connectionTimeoutMillis:5000) prevents
- *     the gateway from hanging on DB lookups during the surge
- *
- * PROFILE:
- *   - Think time: 200–500 ms (spike traffic is impatient — users just clicked
- *     an influencer link and want instant results)
- *   - Wager: 0.01–0.1 ETH (referral users start cautious)
- *   - Bets per session: 3–8 (short spike sessions; user might leave if too slow)
- *
- * USAGE:
- *   k6 run tests/load/03-traffic-spike.js
- *   k6 run --env BASE_URL=http://localhost:3000 --env WS_URL=ws://localhost:3000/ws \
- *           tests/load/03-traffic-spike.js
+ * Scenario: viral/promo flash spike with abrupt user surge and short hold.
+ * Profile: 0->900 ramping VUs, 3–8 bets/session, 200–500ms think time, 0.01–0.1 ETH.
+ * SLO: P95 < 60ms, P99 < 150ms, non-balance error rate < 2%, INTERNAL_ERROR < 5.
+ * Usage: k6 run tests/load/03-traffic-spike.js
  */
 
 import ws   from 'k6/ws';
@@ -212,28 +175,7 @@ export function handleSummary(data) {
   const sloIntErr  = intErr < 5;
   const pass       = sloP95 && sloP99 && sloErr && sloIntErr;
 
-  console.log('\n╔══════════════════════════════════════════════════════════════╗');
-  console.log('║   03 — TRAFFIC SPIKE (Viral Moment / Promo Flash 80→900 VUs)  ║');
-  console.log('╚══════════════════════════════════════════════════════════════╝');
-  console.log(`  Bets succeeded         : ${ok}`);
-  console.log(`  Total attempted        : ${total}`);
-  console.log(`  INSUFFICIENT_BALANCE   : ${insuf}  (expected — spike users deplete fast)`);
-  console.log(`  Unexpected errors      : ${errors}`);
-  console.log(`  INTERNAL_ERRORs        : ${intErr}  ${intErr > 0 ? '← INVESTIGATE (crash/pool exhaustion)' : '(none — good)'}`);
-  console.log(`  WS connect fails       : ${connFail}  ${connFail > 0 ? '← check connection pool / file descriptors' : ''}`);
-  console.log('  ─────────────────────────────────────────────────────────────');
-  console.log(`  Median latency         : ${med.toFixed(2)} ms`);
-  console.log(`  P95 e2e latency        : ${p95.toFixed(2)} ms  (SLO <60 ms)   ${sloP95 ? '✓ PASS' : '✗ FAIL'}`);
-  console.log(`  P99 e2e latency        : ${p99.toFixed(2)} ms  (SLO <150 ms)  ${sloP99 ? '✓ PASS' : '✗ FAIL'}`);
-  console.log(`  Unexpected error rate  : ${(errR * 100).toFixed(3)}%       (SLO <2%)   ${sloErr ? '✓ PASS' : '✗ FAIL'}`);
-  console.log(`  INTERNAL_ERROR count   : ${intErr}          (SLO <5)    ${sloIntErr ? '✓ PASS' : '✗ FAIL'}`);
-  console.log('  ─────────────────────────────────────────────────────────────');
-  console.log(`  Overall result         : ${pass ? '✓ ALL SLOs PASSED' : '✗ SLO FAILURE'}`);
-  console.log('  Key insight: watch Grafana timeseries for P95 spike at Stage 3');
-  console.log('  (around t=1:30) — system should recover within 30 s of peak.');
-  console.log('  Kafka lag metric (dicetilt_kafka_consumer_lag) should not exceed');
-  console.log('  ~500 messages and should clear within 5 s of VU ramp-down.');
-  console.log('══════════════════════════════════════════════════════════════════\n');
+  console.log(`03-traffic-spike ${pass ? 'PASS' : 'FAIL'} | bets=${ok}/${total} intErr=${intErr} wsFail=${connFail} med=${med.toFixed(1)}ms P95=${p95.toFixed(1)}ms P99=${p99.toFixed(1)}ms errRate=${(errR * 100).toFixed(2)}%`);
 
   return {
     'results/03-traffic-spike-summary.json': JSON.stringify(data, null, 2),

@@ -48,13 +48,6 @@ async function main() {
   // In-session dedup: skip replayed messages already paid in this run.
   const completedThisRun = new Set<string>();
 
-  // Mutex: KafkaJS eachMessage can process different partitions concurrently.
-  // This flag ensures only one payout tx is in-flight at any time so the wallet
-  // nonce is consumed strictly in sequence.
-  // Node.js is single-threaded: the while-check + assignment is atomic because
-  // no await sits between them, so no two handlers can both pass the check.
-  let payoutBusy = false;
-
   // Attempt to send a payout, retrying up to maxRetries times on NONCE_EXPIRED.
   // NONCE_EXPIRED means a ghost tx from a previous session (race condition era)
   // occupies that nonce. Retrying lets ethers query a fresh nonce and skip it.
@@ -79,6 +72,8 @@ async function main() {
   }
 
   await consumer.run({
+    // Serialize payouts to keep wallet nonce consumption deterministic.
+    // With concurrency=1, a separate in-process mutex is unnecessary.
     partitionsConsumedConcurrently: 1,
     eachMessage: async ({ topic: _topic, message }) => {
       const raw = message.value?.toString();
@@ -97,14 +92,6 @@ async function main() {
         log.info('Skip duplicate withdrawal', { event: 'WITHDRAWAL_DUPLICATE_SESSION', withdrawalId: ev.withdrawal_id });
         return;
       }
-
-      // Acquire the payout mutex — spin until the previous send completes.
-      // Prevents concurrent handlers on different partitions from racing for
-      // the same wallet nonce.
-      while (payoutBusy) {
-        await new Promise<void>(resolve => setTimeout(resolve, config.payoutMutexSpinMs));
-      }
-      payoutBusy = true;
 
       try {
         const amountWei = ethers.parseEther(ev.amount);
@@ -149,8 +136,6 @@ async function main() {
         });
         // The Redis balance was pre-deducted at withdrawal-request time.
         // Manual recovery required: re-queue this withdrawal_id or credit back via admin.
-      } finally {
-        payoutBusy = false;
       }
     },
   });

@@ -1,37 +1,8 @@
 /**
- * 01-baseline-normal.js — Quiet-hours baseline traffic
- *
- * SCENARIO CONTEXT:
- *   Models MonkeyTilt at 2–4 AM UTC: roughly 100–300 globally active users
- *   gambling at a relaxed pace. At a 0.15 DAU:concurrent ratio this corresponds
- *   to ~300–2000 daily active users — realistic for a Series-A crypto casino in
- *   its early-growth phase.
- *
- *   Used to:
- *     1. Establish a healthy latency baseline against which higher-stress tests
- *        are compared (any regression in P95 shows up here first).
- *     2. Confirm the system is stable over a sustained window — no slow memory
- *        leaks, no Redis connection droop, no Kafka lag accumulation.
- *
- * PROFILE:
- *   - 50 constant VUs, each holding one WS connection at a time
- *   - Session model: 5–10 bets per WS session, then close + reconnect
- *     (mirrors a user opening the app, gambling a bit, closing it, returning)
- *   - Think time: 2–4 s (tired/casual — slow deliberation)
- *   - Wager: 0.005–0.05 ETH (small casual bets on 10 ETH starting balance)
- *   - Chain: ETH only (baseline; multi-chain tested in test 02)
- *   - Target: random 20–80 (not always 50/50 — realistic asymmetric bets)
- *   - Duration: 8 minutes
- *
- * EXPECTED RESULTS:
- *   - Steady ~10–20 bets/sec throughput
- *   - P95 well under 20 ms (internal); <25 ms k6 end-to-end with Docker overhead
- *   - Near-zero error rate (balance exhaustion is handled, counted separately)
- *
- * USAGE:
- *   k6 run tests/load/01-baseline-normal.js
- *   k6 run --env BASE_URL=http://localhost:3000 --env WS_URL=ws://localhost:3000/ws \
- *           tests/load/01-baseline-normal.js
+ * Scenario: quiet-hours baseline traffic (ETH only) for stable latency reference.
+ * Profile: 50 constant VUs, 5–10 bets/session, 2–4s think time, 0.005–0.05 ETH wagers.
+ * SLO: P95 < 25ms, P99 < 50ms, non-balance error rate < 0.5%.
+ * Usage: k6 run tests/load/01-baseline-normal.js
  */
 
 import ws   from 'k6/ws';
@@ -197,8 +168,6 @@ export function handleSummary(data) {
   const ok      = m['baseline_bets_succeeded']?.values?.count        ?? 0;
   const insuf   = m['baseline_bets_insufficient_balance']?.values?.count ?? 0;
   const errors  = m['baseline_bets_error']?.values?.count            ?? 0;
-  const total   = ok + insuf + errors;
-
   const sloP95  = p95 < 25;
   const sloP99  = p99 < 50;
   const sloErr  = errRate < 0.005;

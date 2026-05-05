@@ -10,15 +10,15 @@ All user-facing and session-related interaction flows. For blockchain-specific d
 
 | # | Flow | Category |
 |---|---|---|
-| 1 | Burner Wallet Creation + EIP-712 Authentication | Auth |
+| 1 | Burner Wallet Creation + Signature Authentication | Auth |
 | 2 | WebSocket Connection Upgrade | Auth |
-| 3 | User Logout (Explicit Session Invalidation) | Auth |
+| 3 | Session Lifecycle Note (No Explicit Logout Route) | Auth |
 | 4 | Session Expiry (TTL-based Automatic Invalidation) | Auth |
-| 5 | Session Revocation (Admin-Initiated) | Auth |
+| 5 | Session Revocation (External Key Deletion) | Auth |
 | 6 | Bet — WIN Path (Full end-to-end) | Game Loop |
 | 7 | Bet — LOSS Path | Game Loop |
 | 8 | Bet — Insufficient Balance (Lua Rejection) | Game Loop |
-| 9 | Bet — Rate Limited (Sliding Window Triggered) | Game Loop |
+| 9 | Bet — Rate Limited (Fixed-Window Triggered) | Game Loop |
 | 10 | Bet — Invalid Payload (Zod Rejection) | Game Loop |
 | 11 | Bet Amount Adjustment (Client-Side Only) | Game Loop |
 | 12 | Provably Fair — Status Check | Provably Fair |
@@ -32,9 +32,9 @@ All user-facing and session-related interaction flows. For blockchain-specific d
 
 ---
 
-## Flow 1 — Burner Wallet Creation + EIP-712 Authentication
+## Flow 1 — Burner Wallet Creation + Signature Authentication
 
-No MetaMask required. The client generates a local burner wallet on page load and uses it to sign the EIP-712 challenge.
+No MetaMask required. The client generates a local burner wallet on page load and signs a one-time server challenge.
 
 ```mermaid
 sequenceDiagram
@@ -53,12 +53,12 @@ sequenceDiagram
     API-->>N: { nonce: 'a3f8...' }
     N-->>B: { nonce: 'a3f8...' }
 
-    B->>B: burnerWallet.signMessage(EIP-712 typed data including nonce)
+    B->>B: burnerWallet.signMessage(nonce)
     Note over B: Signature proves wallet ownership without any transaction
 
     B->>N: POST /api/v1/auth/verify { walletAddress, signature }
     N->>API: forward
-    API->>API: ethers.utils.verifyMessage(signature) → recoveredAddress
+    API->>API: ethers.verifyMessage(nonce, signature) → recoveredAddress
     API->>API: assert recoveredAddress === walletAddress
 
     alt Signature valid
@@ -133,27 +133,9 @@ sequenceDiagram
 
 ---
 
-## Flow 3 — User Logout (Explicit Session Invalidation)
+## Flow 3 — Session Lifecycle Note (No Explicit Logout Route)
 
-```mermaid
-sequenceDiagram
-    participant B as Browser
-    participant N as Nginx
-    participant API as API Gateway
-    participant Redis as Redis
-
-    B->>N: POST /api/v1/auth/logout  Authorization: Bearer {JWT}
-    N->>API: forward
-    API->>API: jwt.verify(token) → { userId }
-    API->>Redis: DEL session:{userId}
-    Redis-->>API: (integer) 1
-
-    API->>API: close open WebSocket connection for userId (if any)
-    Note over API: WS close frame sent before server-side socket destruction
-    API-->>B: HTTP 200 { message: "logged out" }
-
-    Note over B: Client discards JWT from memory. WS connection already closed.
-```
+There is currently no dedicated `POST /api/v1/auth/logout` route in the API Gateway. Session invalidation in this stack is driven by Redis session-key expiry or external deletion (`session:{userId}`), and enforced during new authenticated actions (for example, WS `AUTH`, withdraw, and PF endpoints).
 
 ---
 
@@ -175,12 +157,12 @@ sequenceDiagram
     Redis-->>API: (nil) — key expired
 
     API-->>B: HTTP 401 { code: "SESSION_EXPIRED" }
-    Note over B: Client must re-authenticate via EIP-712 to continue
+    Note over B: Client must re-authenticate via challenge-signature auth to continue
 ```
 
 ---
 
-## Flow 5 — Session Revocation (Admin-Initiated)
+## Flow 5 — Session Revocation (External Key Deletion)
 
 ```mermaid
 sequenceDiagram
@@ -321,9 +303,9 @@ sequenceDiagram
 
 ---
 
-## Flow 9 — Bet, Rate Limited (Sliding Window Triggered)
+## Flow 9 — Bet, Rate Limited (Fixed-Window Triggered)
 
-The sliding window rate limiter is **fully wired** into the WS bet handler. It is checked before any balance operation — rejections are cheap and do not touch Redis balance keys.
+The fixed-window rate limiter is **fully wired** into the WS bet handler. It is checked before any balance operation — rejections are cheap and do not touch Redis balance keys.
 
 ```mermaid
 sequenceDiagram
@@ -332,9 +314,9 @@ sequenceDiagram
     participant Redis as Redis
 
     B->>API: WS → { type: "BET_REQUEST", ... } (31st bet within the current 1-second window)
-    API->>Redis: EVAL lua_rate_limit(key="ratelimit:{userId}:bet", now=Date.now(), windowSeconds=1, limit=30)
-    Note over Redis: Lua (atomic): ZREMRANGEBYSCORE (prune entries older than 1s)
-    Note over Redis: ZCARD → 30 (already at limit) → return 0
+    API->>Redis: EVAL lua_rate_limit(key="ratelimit:{userId}:bet", windowSeconds=1, limit=30)
+    Note over Redis: Lua (atomic): INCR counter + set expiry for 1-second window
+    Note over Redis: counter > 30 → return 0
     Redis-->>API: 0 (rejected)
 
     API-->>B: WS → { type: "ERROR", code: "RATE_LIMITED", message: "Too many bets — slow down" }
@@ -342,7 +324,7 @@ sequenceDiagram
     Note over API: Balance, PF Worker, and Kafka are never touched on rate-limited requests
 ```
 
-> **Implementation:** `checkRateLimit(userId, 'bet', 1, 30)` — 30 bets per second per user. The Lua script uses a Redis ZSET keyed `ratelimit:{userId}:bet`. `dicetilt_rate_limit_rejections_total{limiter_type="bet"}` is incremented **only** when the rate-limit check succeeds and returns a rejection (limit exceeded). If the Redis call itself fails, the handler **fails closed** — reject the bet with `INTERNAL_ERROR`, increment `dicetilt_redis_error_rejections_total` (not `dicetilt_rate_limit_rejections_total`), and log `REDIS_UNAVAILABLE`.
+> **Implementation:** `checkRateLimit(userId, 'bet', 1, 30)` — 30 bets per second per user. The Lua script uses a fixed-window counter keyed `ratelimit:{userId}:bet` (atomic `INCR` + expiry). `dicetilt_rate_limit_rejections_total{limiter_type="bet"}` is incremented **only** when the rate-limit check succeeds and returns a rejection (limit exceeded). If the Redis call itself fails, the handler **fails closed** — reject the bet with `INTERNAL_ERROR`, increment `dicetilt_redis_error_rejections_total` (not `dicetilt_rate_limit_rejections_total`), and log `REDIS_UNAVAILABLE`.
 
 ---
 
@@ -575,7 +557,7 @@ stateDiagram-v2
     BETTING --> AUTHENTICATED : ERROR sent (INSUFFICIENT_BALANCE / RATE_LIMITED / INVALID_PAYLOAD)
 
     AUTHENTICATED --> REVOKED : SESSION_REVOKED pushed (admin deleted session key)
-    REVOKED --> [*] : Client must re-authenticate via EIP-712
+    REVOKED --> [*] : Client must re-authenticate via challenge-signature auth
 
     CLOSED --> [*] : Connection terminated, resources freed
 ```
@@ -586,7 +568,7 @@ stateDiagram-v2
 
 ### 19.1 `TEST_MODE` Dev Token Endpoint
 
-When `TEST_MODE=true` (set in `docker-compose.yml`), the API Gateway exposes an additional route that bypasses EIP-712 wallet signing. This is used by the k6 load tests to authenticate programmatically without a real wallet.
+When `TEST_MODE=true`, the API Gateway exposes an additional route that bypasses wallet signing. This is used by the k6 load tests to authenticate programmatically without a real wallet.
 
 ```mermaid
 sequenceDiagram
@@ -595,7 +577,7 @@ sequenceDiagram
     participant PG as PostgreSQL
     participant Redis as Redis
 
-    Note over K6: Load test needs a JWT without going through EIP-712
+    Note over K6: Load test needs a JWT without going through wallet-signature auth
     K6->>API: GET /api/v1/dev/token?walletIndex=0
     Note over API: Route only active when config.testMode && NODE_ENV !== 'production'
     API->>API: derive deterministic Hardhat wallet address for index 0
@@ -608,7 +590,7 @@ sequenceDiagram
     Note over K6: Use JWT for all subsequent WS connections and REST calls
 ```
 
-> **Security:** This endpoint is guarded by `config.testMode && process.env.NODE_ENV !== 'production'`; otherwise it returns 404. A startup sanity check exits the process if `TEST_MODE=true` while `NODE_ENV=production` to catch misconfiguration early. The `TEST_MODE` env var is explicitly set to `"true"` only in `docker-compose.yml` and only for the PoC demo stack.
+> **Security:** This endpoint is guarded by `config.testMode && process.env.NODE_ENV !== 'production'`; otherwise it returns 404. A startup sanity check exits the process if `TEST_MODE=true` while `NODE_ENV=production` to catch misconfiguration early. In `docker-compose.yml`, `TEST_MODE` defaults to `false` (`${TEST_MODE:-false}`), so it must be enabled intentionally for load-testing/dev-token workflows.
 
 ---
 
@@ -632,7 +614,7 @@ sequenceDiagram
     JS->>JS: else: ethers.Wallet.createRandom() or stored from localStorage
     JS->>Anvil: eth_getBalance(account1Address) — confirm funded (when demo)
     Anvil-->>JS: "10000000000000000000000" (10000 ETH)
-    Note over JS: Continue normal auth flow (EIP-712 challenge → verify → JWT → WS)
+    Note over JS: Continue normal auth flow (challenge → signMessage → verify → JWT → WS)
 ```
 
 > **Purpose:** Simplifies recruiter demos of the Deposit feature. Hardhat account #1's wallet address is already known to the system after a normal auth flow, and its large ETH balance makes it easy to demonstrate multiple on-chain deposits without running out of test ETH.

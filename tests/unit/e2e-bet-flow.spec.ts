@@ -1,4 +1,3 @@
-import { ethers } from 'ethers';
 import WebSocket from 'ws';
 import Redis from 'ioredis';
 
@@ -110,7 +109,8 @@ describe('End-to-End Bet Flow (live Docker stack)', () => {
     }
 
     const nonce = await redis.get(`user:${userId}:nonce:ethereum:ETH`);
-    expect(parseInt(nonce!, 10)).toBe(3);
+    expect(nonce).not.toBeNull();
+    expect(parseInt(nonce ?? '0', 10)).toBe(3);
   });
 
   test('insufficient balance returns INSUFFICIENT_BALANCE error', async () => {

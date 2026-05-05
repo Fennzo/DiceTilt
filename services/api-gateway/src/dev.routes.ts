@@ -3,16 +3,16 @@
  * NEVER expose in production (mounted only when config.testMode === true).
  */
 import { Router, type Request, type Response, type Router as RouterType } from 'express';
-import { v4 as uuidv4 } from 'uuid';
 import jwt from 'jsonwebtoken';
 import { ethers } from 'ethers';
 import { config } from './config.js';
-import { setSession, initUserRedisState, getUserBalance, checkRateLimit } from './redis.service.js';
-import { createUserWithWallets, findUserByWalletAddress } from './db.js';
-import { pfGenerateSeed } from './pf.client.js';
+import { checkRateLimit } from './redis.service.js';
 import { rateLimitRejections } from './metrics.js';
+import { upsertUserSessionByWallet } from './auth-user.service.js';
+import { createLoggers } from '@dicetilt/logger';
 
 const router: RouterType = Router();
+const { app: log } = createLoggers('api-gateway');
 
 // Hardhat/Anvil deterministic mnemonic — same as Metamask demo mode in frontend
 const HARDHAT_MNEMONIC = 'test test test test test test test test test test test junk';
@@ -50,47 +50,15 @@ router.get('/api/v1/dev/token', async (req: Request, res: Response) => {
     );
     const walletAddress = wallet.address;
 
-    const existing = await findUserByWalletAddress(walletAddress);
-    let userId: string;
-    let serverSeed: string;
-
-    if (existing) {
-      userId = existing.userId;
-      serverSeed = existing.serverSeed;
-      // Read current Redis balance first (same as auth.routes.ts) so a post-login
-      // deposit that updated Redis is not overwritten with the stale DB value.
-      const currentEth = await getUserBalance(userId, 'ethereum', 'ETH');
-      const currentSol = await getUserBalance(userId, 'solana', 'SOL');
-      await initUserRedisState(
-        userId,
-        serverSeed,
-        currentEth ?? existing.ethBalance,
-        currentSol ?? existing.solBalance,
-      );
-    } else {
-      userId = uuidv4();
-      const seed = await pfGenerateSeed();
-      serverSeed = seed.serverSeed;
-      await createUserWithWallets(userId, serverSeed, walletAddress);
-      await initUserRedisState(userId, serverSeed, config.defaultEthBalance, config.defaultSolBalance);
-    }
-
-    await setSession(userId);
+    const userId = await upsertUserSessionByWallet(walletAddress);
 
     const token = jwt.sign({ userId, walletAddress }, config.jwtSecret, { expiresIn: '24h' });
     res.json({ token, userId, walletAddress, walletIndex: idx });
   } catch (err) {
-    console.error('[Dev] token error:', err);
+    log.error('Dev token error', { event: 'DEV_TOKEN_ERROR', walletIndex: idx, error: String(err) });
     res.status(500).json({ error: 'INTERNAL_ERROR' });
   }
 });
-
-// Hardhat account #0 private key (from the deterministic mnemonic, index 0)
-// This is the deployer/funder account — pre-funded with 10,000 ETH on Anvil.
-const HARDHAT_0_PRIVKEY = ethers.HDNodeWallet.fromMnemonic(
-  ethers.Mnemonic.fromPhrase(HARDHAT_MNEMONIC),
-  "m/44'/60'/0'/0/0",
-).privateKey;
 
 /**
  * POST /api/v1/dev/faucet
@@ -114,15 +82,21 @@ router.post('/api/v1/dev/faucet', async (req: Request, res: Response) => {
 
   try {
     const provider = new ethers.JsonRpcProvider(config.evmRpcUrl);
-    const funder   = new ethers.Wallet(HARDHAT_0_PRIVKEY, provider);
+    // Derive only when endpoint is called so test mnemonic material is not loaded
+    // into process memory during non-dev route usage.
+    const funderPrivKey = ethers.HDNodeWallet.fromMnemonic(
+      ethers.Mnemonic.fromPhrase(HARDHAT_MNEMONIC),
+      "m/44'/60'/0'/0/0",
+    ).privateKey;
+    const funder   = new ethers.Wallet(funderPrivKey, provider);
     const tx = await funder.sendTransaction({
       to:    address,
       value: ethers.parseEther(sendAmount.toString()),
     });
     res.json({ txHash: tx.hash, address, amount: sendAmount });
   } catch (err) {
-    console.error('[Dev] faucet error:', err);
-    res.status(500).json({ error: 'FAUCET_ERROR', detail: String(err) });
+    log.error('Dev faucet error', { event: 'DEV_FAUCET_ERROR', address, amount: sendAmount, error: String(err) });
+    res.status(500).json({ error: 'FAUCET_ERROR' });
   }
 });
 

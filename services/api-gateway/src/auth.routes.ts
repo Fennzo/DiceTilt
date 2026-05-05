@@ -1,16 +1,13 @@
-import { existsSync, readFileSync } from 'node:fs';   // Fix #12 — replaces require() inside handler
-import crypto from 'node:crypto';
 import { Router, type Request, type Response, type Router as RouterType } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import jwt from 'jsonwebtoken';
 import { ethers } from 'ethers';
 import { AuthVerifyRequestSchema } from '@dicetilt/shared-types';
 import { config } from './config.js';
-import { redis, setSession, initUserRedisState, getUserBalance, checkRateLimit } from './redis.service.js';
-import { createUserWithWallets, findUserByWalletAddress, insertSeedCommitment } from './db.js';
-import { pfGenerateSeed } from './pf.client.js';
-import { authFailures, rateLimitRejections } from './metrics.js';   // Fix #10
+import { redis, getUserBalance, checkRateLimit } from './redis.service.js';
+import { authFailures, rateLimitRejections } from './metrics.js'; 
 import { createLoggers, pseudonymize } from '@dicetilt/logger';
+import { upsertUserSessionByWallet } from './auth-user.service.js';
 
 const { audit, security } = createLoggers('api-gateway');
 
@@ -76,34 +73,7 @@ router.post('/api/v1/auth/verify', async (req: Request, res: Response) => {
       return;
     }
 
-    const existing = await findUserByWalletAddress(walletAddress);
-    let userId: string;
-    let serverSeed: string;
-
-    if (existing) {
-      userId = existing.userId;
-      serverSeed = existing.serverSeed;
-      // Restore Redis state from DB balances (covers Redis eviction / restart)
-      const currentEth = await getUserBalance(userId, 'ethereum', 'ETH');
-      const currentSol = await getUserBalance(userId, 'solana', 'SOL');
-      await initUserRedisState(
-        userId,
-        serverSeed,
-        currentEth ?? existing.ethBalance,
-        currentSol ?? existing.solBalance,
-      );
-    } else {
-      userId = uuidv4();
-      const seed = await pfGenerateSeed();
-      serverSeed = seed.serverSeed;
-      await createUserWithWallets(userId, serverSeed, walletAddress);
-      // H2/M9 — Persist the initial seed commitment to the immutable audit log.
-      const commitment = crypto.createHash('sha256').update(serverSeed).digest('hex');
-      await insertSeedCommitment(userId, commitment);
-      await initUserRedisState(userId, serverSeed, config.defaultEthBalance, config.defaultSolBalance);
-    }
-
-    await setSession(userId);
+    const userId = await upsertUserSessionByWallet(walletAddress);
     const token = jwt.sign({ userId, walletAddress }, config.jwtSecret, { expiresIn: '24h' });
     audit.info('Auth success', { event: 'AUTH_SUCCESS', userId: pseudonymize(userId), walletAddress });
     res.json({ token });
@@ -135,14 +105,9 @@ router.get('/api/v1/balance', async (req: Request, res: Response) => {
 });
 
 router.get('/api/v1/config', (_req: Request, res: Response) => {
-  let addr = process.env.TREASURY_CONTRACT_ADDRESS || '';
-  if (!addr) {
-    const p = '/shared/treasury-addr';
-    if (existsSync(p)) addr = readFileSync(p, 'utf8').trim();
-    }
   res.json({
-    treasuryContractAddress: addr || null,
-    evmRpcUrl: process.env.PUBLIC_EVM_RPC_URL || process.env.EVM_RPC_URL || 'http://localhost:8545',
+    treasuryContractAddress: config.treasuryContractAddress || null,
+    evmRpcUrl: config.publicEvmRpcUrl,
   });
 });
 

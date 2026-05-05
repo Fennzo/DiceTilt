@@ -4,6 +4,8 @@
 
 This document covers the complete Kafka event bus design: topic routing, producer/consumer matrix, typed message schemas, consumer group strategy, DLQ flow, and reliability configuration.
 
+> **Runtime status:** In the current PoC stack, EVM producers/consumers are active. Solana producers/consumers are architectural/planned lanes and are not deployed in `docker-compose.yml`.
+
 ---
 
 ## 1. Topic Routing Diagram
@@ -64,9 +66,9 @@ flowchart LR
 | Topic | Producers | Consumers | Consumer Group | Notes |
 |---|---|---|---|---|
 | `BetResolved` | API Gateway | Ledger Consumer | `ledger-persistent-group` | High-frequency. Every bet produces one event. Idempotent inserts via `bet_id` PK. |
-| `DepositReceived` | EVM Listener, Solana Listener | Ledger Consumer | `ledger-persistent-group` | Both chains share one topic. `chain` field differentiates. |
-| `WithdrawalRequested` | API Gateway | EVM Payout Worker, Solana Payout Worker | `evm-payout-group`, `solana-payout-group` | Each worker reads all messages; application-level filtering on `chain` field. |
-| `WithdrawalCompleted` | EVM Payout Worker, Solana Payout Worker | Ledger Consumer | `ledger-persistent-group` | Produced after on-chain tx is mined. Ledger Consumer records it, updates Redis, PUBLISHes to `user:updates:{userId}` so API Gateway can push WITHDRAWAL_COMPLETED to WebSocket. |
+| `DepositReceived` | EVM Listener *(active)*, Solana Listener *(planned)* | Ledger Consumer | `ledger-persistent-group` | Shared topic with `chain` field differentiation. Solana producer path is planned, not currently deployed. |
+| `WithdrawalRequested` | API Gateway | EVM Payout Worker *(active)*, Solana Payout Worker *(planned)* | `evm-payout-group`, `solana-payout-group` | Chain-specific workers filter messages by `chain`. Solana worker path is planned, not currently deployed. |
+| `WithdrawalCompleted` | EVM Payout Worker *(active)*, Solana Payout Worker *(planned)* | Ledger Consumer | `ledger-persistent-group` | Produced after on-chain tx is mined. Solana completion producer path is planned, not currently deployed. |
 | `TradeExecuted` | Trade Router *(future)* | Ledger Consumer *(future)* | `ledger-persistent-group` | Pre-created topic. No active producers or consumers in PoC. Reserved for Tilt Trade. |
 | `BetResolved-DLQ` | Ledger Consumer *(on failure)* | Manual audit process | `dlq-audit-group` | Failed `BetResolved` settlements. Must be zero in normal operation. |
 | `DepositReceived-DLQ` | Ledger Consumer *(on failure)* | Manual audit process | `dlq-audit-group` | Failed deposit settlements. |
@@ -353,4 +355,4 @@ done
 
 > **Note on partitions:** `BetResolved` uses 3 partitions, keyed by `user_id`. This ensures all bets for the same user are processed by the same Ledger Consumer partition, preserving per-user ordering. `WithdrawalRequested` also uses `user_id` as the partition key for the same reason.
 >
-> **Parallelism:** Deploy **3 Ledger Consumer replicas** in the same consumer group (`ledger-persistent-group`). With 3 partitions, each replica processes exactly one partition — yielding **3 parallel partition processors**. This is an explicit architecture constraint (see `implementation_plan.md` Constraint 24).
+> **Parallelism:** The default PoC Compose stack runs one `ledger-consumer` instance. Scaling to 3 replicas in the same consumer group (`ledger-persistent-group`) is the intended scale-out path for 3-partition parallel processing.

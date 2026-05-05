@@ -18,7 +18,7 @@ graph TD
     end
     
     subgraph "Internal Processing Workers"
-        PF[Provably Fair Worker<br>TypeScript, gRPC/REST]
+        PF[Provably Fair Worker<br>TypeScript, REST]
         Ledger[Ledger / Kafka Consumer<br>TypeScript]
         Payout[Payout Worker<br>TypeScript]
     end
@@ -101,7 +101,7 @@ We decouple the monolith into specific, single-purpose workers that scale indepe
 | Service Name | Description & Purpose | Creation Instructions |
 | --- | --- | --- |
 | **Reverse Proxy (Nginx/Traefik)** | The single unified entry point for the frontend to prevent hardcoded ports. | Configure a reverse proxy container to handle CORS, routing all traffic (`/ws`, `/api`, `/api/pf`) to the API Gateway. The Gateway forwards PF requests internally to the PF Worker. |
-| **API / Gateway Service** | The primary ingress layer. Handles inbound REST requests, WebSocket upgrades, EIP-712 auth, and dictates the high-speed game loop. | Create an Express/WS app in **TypeScript**. Run via **Node.js cluster** (one worker per CPU core) to parallelise EIP-712 verification and request handling (Constraint 3.24). The **cluster primary** exposes aggregated Prometheus metrics on port **9091** via `prom-client` **AggregatorRegistry**; gateway workers serve HTTP/WS on port 3000. **Configure Prometheus to scrape the API Gateway primary on 9091** (not 3000). Integrate `ioredis` to execute Lua scripts for balance checks. Publish outcomes to Kafka. |
+| **API / Gateway Service** | The primary ingress layer. Handles inbound REST requests, WebSocket upgrades, challenge-signature auth, and dictates the high-speed game loop. | Create an Express/WS app in **TypeScript**. Run via **Node.js cluster** (one worker per CPU core) to parallelise signature verification and request handling (Constraint 3.24). The **cluster primary** exposes aggregated Prometheus metrics on port **9091** via `prom-client` **AggregatorRegistry**; gateway workers serve HTTP/WS on port 3000. **Configure Prometheus to scrape the API Gateway primary on 9091** (not 3000). Integrate `ioredis` to execute Lua scripts for balance checks. Publish outcomes to Kafka. |
 | **Provably Fair Worker** | An isolated, **stateless** cryptographic engine. Computes HMAC-SHA256 hashes and generates seeds. Never reads from Postgres or Redis — the API Gateway passes all inputs (including the server seed). | Build an internal REST service in **TypeScript**. Use a **piscina** Worker Threads pool for HMAC-SHA256 computation (Constraint 3.24). Pure computation only — no database access, no state. |
 | **Ledger / Kafka Consumer** | The asynchronous persistent state worker. Protects the PostgreSQL database from high-frequency lockups by bulk-inserting from the Kafka topic. | Use **TypeScript** and `kafkajs`. Use **`eachBatch`** with messages grouped by `user_id` and `Promise.all` across groups for parallel DB inserts (Constraint 3.24). Deploy 3 replicas for 3-partition parallelism. Execute PostgreSQL inserts using `ON CONFLICT DO NOTHING` on UUID primary keys. |
 | **EVM Web3 Listener Service** | The blockchain observer. Listens to the local Ethereum network for real-world smart contract deposits to fund the Web2 player balances. | Run a headless **TypeScript** loop using `ethers.js`. Attach to `http://localhost:8545` and listen for `Deposit` contract events using pre-funded deterministic accounts. |
@@ -150,9 +150,9 @@ Private keys and JWT secrets must never be hardcoded in source code. The reposit
 
 The API Gateway must never hold private keys or sign transactions. It simply produces a `WithdrawalRequested` Kafka event. The Payout Worker, isolated on a backend subnet, consumes this event, initializes the `ethers` instance via the Vault-injected private key, and safely signs the outbound blockchain transaction.
 
-### 3.6 Cryptographic Authentication (EIP-712)
+### 3.6 Cryptographic Authentication (Challenge Signature)
 
-The API Gateway must contain an endpoint where the user submits an EIP-712 cryptographic signature proving wallet ownership. `ethers.utils.verifyMessage` validates the signature against the wallet address before issuing a session JWT. The WebSocket connection must reject clients lacking a valid JWT — the client sends the JWT in the first `AUTH` frame after the HTTP 101 handshake (Section 4); the server responds with `AUTH_OK` or closes with code 1008 on failure.
+The API Gateway must contain endpoints where the user fetches a one-time challenge (`/api/v1/auth/challenge`) and submits a wallet signature (`/api/v1/auth/verify`) proving wallet ownership. `ethers.verifyMessage(nonce, signature)` validates the signature against the wallet address before issuing a session JWT. The WebSocket connection must reject clients lacking a valid JWT — the client sends the JWT in the first `AUTH` frame after the HTTP 101 handshake (Section 4); the server responds with `AUTH_OK` or closes with code 1008 on failure.
 
 ### 3.7 Accurate Provably Fair Mechanics & Lifecycle
 
@@ -164,7 +164,7 @@ The architecture must explicitly define how the Event-Driven Ansible controller 
 
 ### 3.9 Frictionless Recruiter UX (In-Browser Burner Wallet)
 
-The frontend UI must not require the user to install MetaMask. The client-side JavaScript must utilize `ethers.Wallet.createRandom()` on page load to generate a temporary local session wallet. The entire EIP-712 auth flow (challenge → sign → verify → JWT → WebSocket) must execute **automatically and silently** on page load — the recruiter sees only a brief loading spinner before the game floor appears. No manual "Connect" button. No on-chain deposit step. **Every user starts with a default PoC balance** (10 ETH, 10 SOL) in both chains at registration, so the recruiter can immediately play without waiting for blockchain transactions. The on-chain deposit and withdrawal flows remain architecturally complete and documented but are not part of the primary PoC demo path.
+The frontend UI must not require the user to install MetaMask. The client-side JavaScript must utilize `ethers.Wallet.createRandom()` on page load to generate a temporary local session wallet. The entire auth flow (challenge → `signMessage` → verify → JWT → WebSocket) must execute **automatically and silently** on page load — the recruiter sees only a brief loading spinner before the game floor appears. No manual "Connect" button. No on-chain deposit step. **Every user starts with a default PoC balance** (10 ETH, 10 SOL) in both chains at registration, so the recruiter can immediately play without waiting for blockchain transactions. The on-chain deposit and withdrawal flows remain architecturally complete and documented but are not part of the primary PoC demo path.
 
 ### 3.10 Enterprise Testing Discipline (Jest)
 
@@ -202,10 +202,10 @@ A monolithic `.env` is strongly discouraged for independent workers. The archite
 
 **API Gateway (`/services/api-gateway/.env`):**
 *   `PORT`: The Express HTTP ingress port (e.g., 3000).
-*   `JWT_SECRET`: The symmetric key used for EIP-712 session signing.
+*   `JWT_SECRET`: The symmetric key used for session token signing.
 *   `REDIS_URI`: Internal Docker DNS (e.g., `redis://redis:6379`).
 *   `KAFKA_BROKERS`: Internal Kafka DNS (e.g., `kafka:29092`).
-*   `PF_WORKER_URL`: The internal REST/gRPC URL to call the isolated hash engine.
+*   `PF_WORKER_URL`: The internal REST URL to call the isolated hash engine.
 
 **Provably Fair Worker (`/services/provably-fair/.env`):**
 *   `PORT`: The internal binding port (e.g., 3001).
@@ -237,11 +237,11 @@ The Ledger Consumer and API Gateway run in separate processes. The API Gateway h
 
 ### 3.17b Initial Wallet Generation (Both Chains at Registration)
 
-At the moment of EIP-712 registration, **wallet rows for both Ethereum and Solana must be automatically created** in the `wallets` table. Each row must have a **default PoC balance** (e.g., 10 ETH, 10 SOL) so the recruiter can run through the full flow without waiting for deposits. If the user authenticates with an Ethereum wallet, create `(user_id, ethereum, ETH, balance=10, wallet_address)` and `(user_id, solana, SOL, balance=10, wallet_address)` — the Solana `wallet_address` can be a placeholder until the user connects a Solana keypair, or the same auth flow can support both. The Ledger Consumer expects these rows to exist for `DepositReceived` upserts.
+At the moment of wallet registration, **wallet rows for both Ethereum and Solana must be automatically created** in the `wallets` table. Each row must have a **default PoC balance** (e.g., 10 ETH, 10 SOL) so the recruiter can run through the full flow without waiting for deposits. If the user authenticates with an Ethereum wallet, create `(user_id, ethereum, ETH, balance=10, wallet_address)` and `(user_id, solana, SOL, balance=10, wallet_address)` — the Solana `wallet_address` can be a placeholder until the user connects a Solana keypair, or the same auth flow can support both. The Ledger Consumer expects these rows to exist for `DepositReceived` upserts.
 
-### 3.18 High-Precision Rate Limiting (Sliding Window)
+### 3.18 High-Precision Rate Limiting (Fixed Window)
 
-The API Gateway must be protected from bot abuse using a sliding window algorithm implemented via Redis Sorted Sets (ZSET). The limiter must be atomic (via Lua script). The bet rate limiter enforces **30 bets per second per user** (key: `ratelimit:{userId}:bet`, window: 1s). The Lua script atomically: (1) `ZREMRANGEBYSCORE` to prune entries older than the window, (2) `ZCARD` to count current entries, (3) if under limit, `ZADD` + `PEXPIRE`. On Redis failure, the handler **fails closed** — reject the bet and return a WebSocket `ERROR` frame with code `INTERNAL_ERROR` or `SERVICE_UNAVAILABLE` (message: "Service temporarily unavailable"). For rate-limit violations (when Redis is healthy), increment `dicetilt_rate_limit_rejections_total{limiter_type="bet"}`. For Redis-unavailable rejections (fail-closed), increment **only** `dicetilt_redis_error_rejections_total` and emit security logs; configure a Prometheus alert on `rate(dicetilt_redis_error_rejections_total[5m]) > 0`. The Lua script and its callers must consistently treat Redis errors as a rejection path — both the rate limiter and the atomic balance/escrow check fail closed so behavior is secure and consistent.
+The API Gateway must be protected from bot abuse using a fixed-window algorithm implemented via Redis Lua. The bet rate limiter enforces **30 bets per second per user** (key: `ratelimit:{userId}:bet`, window: 1s). The script atomically increments a counter (`INCR`) and enforces expiry for the current window. On Redis failure, the handler **fails closed** — reject the bet and return a WebSocket `ERROR` frame with code `INTERNAL_ERROR` (message: "Service temporarily unavailable"). For rate-limit violations (when Redis is healthy), increment `dicetilt_rate_limit_rejections_total{limiter_type="bet"}`. For Redis-unavailable rejections (fail-closed), increment **only** `dicetilt_redis_error_rejections_total` and emit security logs; configure a Prometheus alert on `rate(dicetilt_redis_error_rejections_total[5m]) > 0`. The script and its callers must consistently treat Redis errors as a rejection path — both the rate limiter and the atomic balance/escrow check fail closed so behavior is secure and consistent.
 
 ### 3.19 Multi-Chain Listener Resilience
 
@@ -265,9 +265,9 @@ Every TypeScript microservice must expose a `/metrics` HTTP endpoint using `prom
 - `dicetilt_wager_volume_total{chain, currency}` (Counter) — Total volume wagered broken out by chain and currency. Visually demonstrates the multi-chain architecture is live simultaneously.
 - `dicetilt_active_websocket_connections` (Gauge) — Real-time active player count. The most immediately legible business KPI for a non-technical audience.
 - `dicetilt_double_spend_rejections_total` (Counter) — Every increment is live proof the Redis Lua atomic check caught a potential race condition. Can be triggered live during a demo by clicking "Roll" in rapid succession.
-- `dicetilt_rate_limit_rejections_total{limiter_type}` (Counter) — Proves both the sliding window (Constraint 3.18) and session limiters are active.
+- `dicetilt_rate_limit_rejections_total{limiter_type}` (Counter) — Proves both the fixed-window limiter (Constraint 3.18) and session limiters are active.
 - `dicetilt_redis_error_rejections_total` (Counter) — Bet rejections due to Redis unavailability (fail closed). Alert on `rate(...[5m]) > 0` to detect Redis outages.
-- `dicetilt_auth_failures_total` (Counter) — EIP-712 signature validation failures. A spike indicates a bug or probing attempt.
+- `dicetilt_auth_failures_total` (Counter) — wallet-signature auth validation failures. A spike indicates a bug or probing attempt.
 - `dicetilt_on_chain_deposits_total{chain}` (Counter) — Multi-chain deposit pipeline health. Both listeners must increment independently, proving chain isolation (Constraint 3.19).
 - `dicetilt_withdrawal_requests_total{chain}` / `dicetilt_withdrawal_completions_total{chain}` (Counter) — Delta between these exposes payout pipeline lag. In a healthy system they converge.
 - `dicetilt_kafka_dlq_messages_total{source_topic}` (Counter) — Any increment here is a critical financial settlement failure. This counter must be zero during normal operation; it is the primary alert signal for the DLQ pattern defined in Constraint 3.12.
@@ -300,7 +300,7 @@ Input validation must be enforced at three distinct layers with no single layer 
 TypeScript compiles to JavaScript and runs on the Node.js runtime (V8 + libuv event loop). The single-threaded event loop limits CPU-bound parallelism. The following constraints enforce explicit parallelism where needed:
 
 - **Provably Fair Worker:** Do not use synchronous `crypto.createHmac` on the main thread under concurrent load. Use a **piscina** Worker Threads pool so hash computation runs in parallel across concurrent requests. **Critical:** set `minThreads = maxThreads = Math.max(2, os.cpus().length)`. Without this, piscina lazily spawns threads on demand (50–200ms cold-start per thread), causing P95 latency spikes (observed: 63ms with 16 CPUs, `minThreads:1`). Pre-warming all threads at startup eliminates this cold-start entirely. This prevents the PF Worker from becoming a bottleneck during high-frequency betting.
-- **API Gateway:** Run as a **Node.js cluster** — one worker process per CPU core. This parallelises EIP-712 signature verification and request handling across cores. A single Node.js process cannot utilise multiple cores for CPU-bound work. Worker count is controlled by the `CLUSTER_WORKERS` environment variable (default: `os.cpus().length`, minimum 2). The cluster **primary** serves aggregated Prometheus metrics on internal port **9091** via `prom-client AggregatorRegistry`; each **worker** must construct `new AggregatorRegistry()` on startup (even if unused) to register the IPC response handler that `clusterMetrics()` relies on. In prom-client v15, this IPC handler is registered only by the `AggregatorRegistry` constructor — there is no static `setupWorker()` method.
+- **API Gateway:** Run as a **Node.js cluster** — one worker process per CPU core. This parallelises signature verification and request handling across cores. A single Node.js process cannot utilise multiple cores for CPU-bound work. Worker count is controlled by the `CLUSTER_WORKERS` environment variable (default: `os.cpus().length`, minimum 2). The cluster **primary** serves aggregated Prometheus metrics on internal port **9091** via `prom-client AggregatorRegistry`; each **worker** must construct `new AggregatorRegistry()` on startup (even if unused) to register the IPC response handler that `clusterMetrics()` relies on. In prom-client v15, this IPC handler is registered only by the `AggregatorRegistry` constructor — there is no static `setupWorker()` method.
 - **Ledger Consumer:** Do not process messages sequentially with `eachMessage`. Use **`eachBatch`** with messages grouped by `user_id`, then `Promise.all` across groups to perform parallel DB inserts for different users while preserving per-user ordering. Sequential processing limits throughput under load.
 - **Kafka partitions:** `BetResolved` and `DepositReceived` topics use 3 partitions. Deploy **3 Ledger Consumer replicas** in the same consumer group so each partition is processed in parallel by a dedicated replica. Document this explicitly in Kafka topology docs.
 - **Trade Router (Rust):** The Trade Router is implemented in Rust (not TypeScript) because MEV path computation (Jito/Flashbots routing, multi-pool optimisation) is CPU-intensive and benefits from Tokio's multi-thread runtime. Node.js event-loop workers cannot achieve the same parallelism for this workload.
@@ -323,8 +323,8 @@ Each service's `package.json` declares `"@dicetilt/shared-types": "workspace:*"`
 ## 4. Required Application Programming Interfaces (APIs)
 This modular architecture will require the following interfaces, all unified behind the Nginx Reverse Proxy.
 ### External APIs (Gateway, routed via Reverse Proxy)
-*   **`POST /api/v1/auth/challenge`**: Returns a secure, randomly generated EIP-712 nonce string for the user's burner wallet to sign (no MetaMask — Constraint 3.9).
-*   **`POST /api/v1/auth/verify`**: Accepts the User's Wallet Address and the signed EIP-712 payload. Validates it via `ethers` and returns a secure JWT.
+*   **`POST /api/v1/auth/challenge`**: Returns a secure, randomly generated nonce string for the user's burner wallet to sign (no MetaMask — Constraint 3.9).
+*   **`POST /api/v1/auth/verify`**: Accepts the user's wallet address, nonce, and signature (`signMessage`). Validates it via `ethers.verifyMessage` and returns a secure JWT.
 *   **`WS /ws`**: The high-frequency WebSocket connection. The HTTP upgrade carries **no credentials** (no `Authorization` header, no `?token=` query param — both appear in Nginx logs and browser history). **Auth handshake:** Until AUTH succeeds, the server accepts **only** an `AUTH` frame as the first client message. Any other message type (e.g., `BET_REQUEST`, `PING`) causes an **immediate close with code 1008**. The server must not buffer or respond with application frames and must not send `PONG` or other frames until `AUTH_OK` is sent. If `AUTH` is not received within 10 seconds of the HTTP 101 handshake, the server closes with code 1008 and increments `dicetilt_auth_failures_total`. On success, the server responds `{ type: "AUTH_OK" }`. Per-user connection limit: **5 simultaneous sockets**. Max incoming frame size: **64 KB**. Remains open for ultra-fast bi-directional game rolls and balance updates.
 *   **`POST /api/v1/withdraw`**: Deducts balance (via Redis Lua atomic lock) and fires a `WithdrawalRequested` Kafka event to the Payout Worker.
 ### WebSocket Message Protocol
@@ -357,14 +357,14 @@ The core game is a provably fair dice roll (1–100). The player chooses a `targ
 | `WITHDRAWAL_COMPLETED` | `withdrawalId: string`, `chain: string`, `currency: string`, `txHash: string`, `amount: string` | Pushed when the API Gateway receives a Redis Pub/Sub message (after Ledger Consumer processes WithdrawalCompleted from Payout Worker). Closes the withdrawal loop so the UI no longer shows "PENDING". |
 | `ERROR` | `code: ErrorCode`, `message: string` | Signals a processing failure. Connection remains open for non-fatal codes. |
 | `PONG` | *(none)* | Response to a client `PING` frame. Only sent after `AUTH_OK` — the server does not respond to `PING` before auth. |
-| `SESSION_REVOKED` | *(none)* | Emitted when an administrator invalidates the Redis session key (Constraint 3.17). Client must re-authenticate via EIP-712. |
+| `SESSION_REVOKED` | *(none)* | Emitted when an administrator invalidates the Redis session key (Constraint 3.17). Client must re-authenticate via challenge-signature auth. |
 
 **`ErrorCode` Enum (`packages/shared-types/src/websocket.ts`):**
 ```typescript
 enum WebSocketErrorCode {
   INSUFFICIENT_BALANCE = 'INSUFFICIENT_BALANCE', // Redis Lua balance check failed
   INVALID_PAYLOAD      = 'INVALID_PAYLOAD',       // Zod schema validation failed
-  RATE_LIMITED         = 'RATE_LIMITED',           // Sliding window limiter triggered
+  RATE_LIMITED         = 'RATE_LIMITED',           // Fixed-window limiter triggered
   SEED_REQUIRED        = 'SEED_REQUIRED',          // clientSeed field missing or empty
   INTERNAL_ERROR       = 'INTERNAL_ERROR',         // Unhandled server-side exception
 }
@@ -380,10 +380,10 @@ The PF Worker is a **pure computation service** with zero state. The API Gateway
 The single-page HTML application (`index.html`) is designed so a non-technical recruiter opens `localhost:80` and immediately sees a live, playable game floor — no manual login, no wallet setup, no deposit required.
 
 ### 5.1 Auto-Login on Page Load (Invisible to Recruiter)
-On page load, client-side JavaScript silently performs the full EIP-712 authentication flow in the background:
+On page load, client-side JavaScript silently performs the full challenge-signature authentication flow in the background:
 1. Generate a burner wallet (`ethers.Wallet.createRandom()`) — stored in memory only.
 2. Call `POST /api/v1/auth/challenge` → receive nonce.
-3. Sign the EIP-712 typed data with the burner wallet.
+3. Sign the nonce with the burner wallet (`signMessage`).
 4. Call `POST /api/v1/auth/verify` → receive JWT. Server creates user with wallets (10 ETH, 10 SOL default balance).
 5. Open WebSocket (`WS /ws`) — the HTTP upgrade carries **no credentials** (Section 4). Send `{ type: "AUTH", token: "{JWT}" }` as the **first WebSocket frame** within 10 seconds. Server responds with `{ type: "AUTH_OK" }` or closes with code 1008 on failure.
 6. The UI transitions from a loading spinner to the game floor. The recruiter never sees a login screen.
@@ -426,8 +426,8 @@ The following sequence diagrams illustrate the specific interactions, constraint
 All steps execute silently on page load — the recruiter sees only a brief loading spinner.
 1. **Client Load:** User opens `index.html`. Client JS immediately generates a burner wallet (`ethers.Wallet.createRandom()`) in memory. No MetaMask, no extension, no user interaction.
 2. **Challenge Request:** Client calls `POST /api/v1/auth/challenge`. API Gateway returns a randomized crypto nonce.
-3. **Signature:** Client uses the burner wallet to sign the nonce via EIP-712 and sends it to `POST /api/v1/auth/verify`.
-4. **Verification & User Init:** API Gateway validates the signature using `ethers.utils.verifyMessage`. On success, it creates the user, **initializes wallets for both Ethereum and Solana with default PoC balances** (10 ETH, 10 SOL), seeds Redis with balance and nonce keys, generates a JWT, and returns it.
+3. **Signature:** Client uses the burner wallet to sign the nonce with `signMessage` and sends it to `POST /api/v1/auth/verify`.
+4. **Verification & User Init:** API Gateway validates the signature using `ethers.verifyMessage`. On success, it creates the user, **initializes wallets for both Ethereum and Solana with default PoC balances** (10 ETH, 10 SOL), seeds Redis with balance and nonce keys, generates a JWT, and returns it.
 5. **WebSocket Upgrade:** Client connects to `WS /ws` — the HTTP upgrade carries no credentials (Section 4). Client sends `{ type: "AUTH", token: "{JWT}" }` as the first WebSocket frame within 10 seconds. Gateway validates the AUTH frame and responds with `AUTH_OK` or closes with code 1008 on failure. Session established.
 6. **Game Floor Displayed:** UI transitions from loading to the dice game floor showing 10 ETH and 10 SOL balances.
 ### Scenario B: The High-Speed Betting Loop (Sub-20ms Execution)

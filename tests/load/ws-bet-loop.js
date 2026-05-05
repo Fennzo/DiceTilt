@@ -1,15 +1,8 @@
 /**
- * ws-bet-loop.js — 100-VU WebSocket stress test
- *
- * Pre-fetches JWTs for 20 Hardhat wallets (walletIndex 0–19) in setup(),
- * then assigns each VU a round-robin token (~5 VUs per wallet).
- *
- * SLO gates:
- *   - P95 bet duration < 20 ms
- *   - Error rate < 1%
- *
- * Usage:
- *   k6 run tests/load/ws-bet-loop.js
+ * Scenario: baseline WebSocket bet loop stress across shared wallet token pool.
+ * Profile: default 100 constant VUs, 20 pre-fetched wallet tokens, continuous single-bet loop.
+ * SLO: k6 P95 < 30ms and bet error rate < 1%.
+ * Usage: k6 run tests/load/ws-bet-loop.js
  */
 
 import ws from 'k6/ws';
@@ -157,13 +150,8 @@ export function handleSummary(data) {
   const errRate = data.metrics['dicetilt_bet_error_rate']?.values?.rate ?? 1;
   const totalBets = data.metrics['dicetilt_bets_total_k6']?.values?.count ?? 0;
 
-  console.log('\n========== PHASE 6 SLO REPORT ==========');
-  console.log(`Total bets processed : ${totalBets}`);
-  console.log(`P95 e2e duration     : ${p95.toFixed(2)} ms  (k6 threshold: <30ms) ${p95 < 30 ? '✓ PASS' : '✗ FAIL'}`);
-  console.log(`  ↳ Internal P95     : check Prometheus dicetilt_bet_processing_duration_ms (<20ms SLO)`);
-  console.log(`Error rate           : ${(errRate * 100).toFixed(2)}%  (SLO: <1%) ${errRate < 0.01 ? '✓ PASS' : '✗ FAIL'}`);
-  console.log('NOTE: k6 P95 includes Docker Desktop/nginx overhead (~6ms on Windows)');
-  console.log('=========================================\n');
+  const pass = p95 < 30 && errRate < 0.01;
+  console.log(`ws-bet-loop ${pass ? 'PASS' : 'FAIL'} | bets=${totalBets} P95=${p95.toFixed(1)}ms errRate=${(errRate * 100).toFixed(2)}%`);
 
   return {
     'results/ws-bet-loop-summary.json': JSON.stringify(data, null, 2),

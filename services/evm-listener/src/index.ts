@@ -113,6 +113,7 @@ async function runListener() {
 
   let provider: ethers.JsonRpcProvider | null = null;
   let attempt = 0;
+  let listenerEpoch = 0;
 
   async function connect(): Promise<ethers.JsonRpcProvider> {
     // HTTP polling is used instead of WebSocket to avoid silent WS disconnections
@@ -126,6 +127,7 @@ async function runListener() {
   }
 
   async function listen() {
+    const epoch = ++listenerEpoch;
     try {
       provider = await connect();
       attempt = 0;
@@ -162,13 +164,16 @@ async function runListener() {
       let blockProcessing = Promise.resolve();
       provider.on('block', (blockNumber: number) => {
         blockProcessing = blockProcessing.then(async () => {
+          if (epoch !== listenerEpoch) return;
           if (blockNumber <= scanHead) return;
           const from = scanHead + 1;
           const to   = blockNumber;
           scanHead   = blockNumber;
           try {
             const newEvents = await contract.queryFilter(contract.filters.Deposit(), from, to) as ethers.EventLog[];
+            if (epoch !== listenerEpoch) return;
             for (const ev of newEvents) {
+              if (epoch !== listenerEpoch) return;
               try {
                 await processDeposit(ev.transactionHash, ev.args[0] as string, ev.args[1] as bigint, ev.blockNumber);
               } catch (evErr) {
@@ -186,12 +191,15 @@ async function runListener() {
       });
 
       provider.on('error', () => {
+        if (epoch !== listenerEpoch) return;
+        listenerEpoch++;
         reconnectionsTotal.inc({ chain: 'ethereum' });
         provider?.removeAllListeners();
         provider = null;
         scheduleReconnect();
       });
     } catch (err) {
+      if (epoch !== listenerEpoch) return;
       log.error('EVM connection error', { event: 'EVM_CONNECTION_ERROR', error: String(err) });
       reconnectionsTotal.inc({ chain: 'ethereum' });
       scheduleReconnect();

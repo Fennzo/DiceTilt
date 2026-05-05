@@ -15,8 +15,8 @@ export async function createUserWithWallets(
   userId: string,
   serverSeed: string,
   walletAddress: string,
+  initialSeedCommitment: string,
 ): Promise<void> {
-  // Fix #9 — normalize to lowercase at the DB layer as a defensive measure.
   // auth.routes.ts already normalizes, but a second call site could pass a
   // checksummed address; this guarantees consistent storage regardless.
   const normalizedAddress = walletAddress.toLowerCase();
@@ -26,6 +26,10 @@ export async function createUserWithWallets(
     await client.query(
       'INSERT INTO users (id, active_server_seed) VALUES ($1, $2)',
       [userId, serverSeed],
+    );
+    await client.query(
+      'INSERT INTO seed_commitment_audit (user_id, seed_commitment) VALUES ($1, $2)',
+      [userId, initialSeedCommitment],
     );
     await client.query(
       `INSERT INTO wallets (user_id, chain, currency, balance, current_nonce, wallet_address)
@@ -62,7 +66,6 @@ export interface ExistingUser {
 }
 
 export async function findUserByWalletAddress(walletAddress: string): Promise<ExistingUser | null> {
-  // Fix #9 — normalize at the DB layer so lookups succeed regardless of whether
   // the caller passes a checksummed (EIP-55) or already-lowercased address.
   const normalizedAddress = walletAddress.toLowerCase();
   // CTE separates the address→user_id lookup from the balance lookups, giving the

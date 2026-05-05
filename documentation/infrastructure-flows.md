@@ -37,11 +37,8 @@ flowchart TD
     Ledger["Ledger Consumer"]
     EVMDeploy["evm-deploy — deploy Treasury.sol + fund 100 ETH — outputs TREASURY_CONTRACT_ADDRESS"]
     EVMListen["EVM Listener"]
-    SolListen["Solana Listener"]
     EVMPay["EVM Payout Worker"]
-    SolPay["Solana Payout Worker"]
     Anvil["Hardhat/Anvil — Healthcheck: eth_blockNumber JSON-RPC"]
-    SolVal["Solana Validator — Healthcheck: getHealth RPC"]
     Prom["Prometheus"]
     Grafana["Grafana"]
 
@@ -54,16 +51,12 @@ flowchart TD
     KafkaInit --> API
     KafkaInit --> Ledger
     KafkaInit --> EVMListen
-    KafkaInit --> SolListen
     KafkaInit --> EVMPay
-    KafkaInit --> SolPay
     Anvil --> EVMDeploy
     EVMDeploy --> EVMListen
     EVMDeploy --> EVMPay
     Anvil --> EVMListen
     Anvil --> EVMPay
-    SolVal --> SolListen
-    SolVal --> SolPay
     PF --> API
     API --> Nginx
     API --> Prom
@@ -90,14 +83,11 @@ sequenceDiagram
     participant KI as init-kafka.sh
     participant Anvil as evm-node (Anvil)
     participant EVMDeploy as evm-deploy
-    participant SolVal as Solana Validator
     participant API as API Gateway
     participant PF as PF Worker
     participant Ledger as Ledger Consumer
     participant EL as EVM Listener
-    participant SL as Solana Listener
     participant EPW as EVM Payout Worker
-    participant SPW as Solana Payout Worker
     participant Nginx as Nginx
     participant Prom as Prometheus
     participant Grafana as Grafana
@@ -129,17 +119,11 @@ sequenceDiagram
     EVMDeploy->>DC: stdout last line = '0x5FbDB...' (parsed by evm-deploy.sh via tail -1)
     Note over EVMDeploy: TREASURY_CONTRACT_ADDRESS written — container exits 0
 
-    DC->>SolVal: start solana-test-validator (multi-stage: Rust compile → validator boot)
-    SolVal->>SolVal: deploy Anchor Treasury program --bpf-program
-    SolVal-->>DC: healthcheck: getHealth → 'ok'
-
     DC->>PF: start PF Worker (depends_on: none — stateless, no external connections)
     DC->>API: start API Gateway (depends_on: PG healthy, Redis healthy, Kafka init complete, PF healthy)
     DC->>Ledger: start Ledger Consumer (depends_on: PG healthy, Redis healthy, Kafka init complete)
     DC->>EL: start EVM Listener (depends_on: evm-deploy complete, Anvil healthy, PG healthy, Kafka init complete)
-    DC->>SL: start Solana Listener (depends_on: SolVal healthy, Kafka init complete)
     DC->>EPW: start EVM Payout Worker (depends_on: evm-deploy complete, Anvil healthy, Kafka init complete)
-    DC->>SPW: start Solana Payout Worker (depends_on: SolVal healthy, Kafka init complete)
 
     DC->>Nginx: start Nginx (depends_on: API healthy)
     DC->>Prom: start Prometheus (depends_on: API healthy, PF healthy)
@@ -158,7 +142,6 @@ sequenceDiagram
 | Redis | `redis-cli ping` | 5s | 3s | 5 | 5s |
 | Kafka | `kafka-topics.sh --bootstrap-server localhost:29092 --list` | 10s | 10s | 10 | 30s |
 | Hardhat/Anvil | `cast block-number --rpc-url http://localhost:8545` | 5s | 5s | 10 | 10s |
-| Solana Validator | `curl -sf -X POST -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' http://localhost:8899` | 5s | 5s | 10 | 60s |
 | API Gateway | `wget -qO- http://localhost:3000/health` | 10s | 5s | 3 | 15s |
 | PF Worker | `wget -qO- http://localhost:3001/health` | 10s | 5s | 3 | 10s |
 | EVM Listener | `wget -qO- http://localhost:3010/health` | 10s | 5s | 3 | 15s |
@@ -168,7 +151,7 @@ sequenceDiagram
 | Prometheus | `wget -qO- http://localhost:9090/-/healthy` | 10s | 5s | 3 | 10s |
 | Grafana | `wget -qO- http://localhost:3000/api/health` | 10s | 5s | 5 | 15s |
 
-> **Start Period:** Docker does not count health check failures during the start period. This allows services with slow initialisation (Kafka formatting, Solana compilation) to fully boot before failing the health check and triggering a container restart.
+> **Start Period:** Docker does not count health check failures during the start period. This allows services with slow initialisation (for example Kafka formatting) to fully boot before failing the health check and triggering a container restart.
 >
 > **Note on Kafka port:** The internal Kafka listener is `29092` (not the standard `9092`). The `9093` port is used for the internal KRaft controller — it is never addressed by application services.
 >
@@ -226,14 +209,10 @@ sequenceDiagram
     participant API as API Gateway (prom-client)
     participant PF as PF Worker (prom-client)
     participant LC as Ledger Consumer (prom-client)
-    participant RedisExp as Redis Exporter
-    participant PGExp as Postgres Exporter
-    participant KafkaExp as Kafka JMX Exporter
+    participant PGBExp as PgBouncer Exporter
     participant Prom as Prometheus
     participant Grafana as Grafana
-    participant Redis as Redis
-    participant PG as PostgreSQL
-    participant Kafka as Kafka
+    participant PGB as PgBouncer
 
     Note over Prom: Every 15s scrape interval (configurable in prometheus.yml)
 
@@ -248,22 +227,10 @@ sequenceDiagram
         LC-->>Prom: dicetilt_kafka_dlq_messages_total, ...
     end
 
-    par Scrape infrastructure exporters
-        RedisExp->>Redis: INFO all
-        Redis-->>RedisExp: keyspace hits/misses, memory_used, evicted_keys, connected_clients
-        Prom->>RedisExp: GET /metrics
-        RedisExp-->>Prom: redis_keyspace_hits_total, redis_memory_used_bytes, ...
-    and
-        PGExp->>PG: SELECT pg_stat_activity, pg_stat_statements
-        PG-->>PGExp: active connections, query duration, cache hit ratio
-        Prom->>PGExp: GET /metrics
-        PGExp-->>Prom: pg_stat_activity_count, pg_stat_statements_mean_exec_time_seconds, ...
-    and
-        KafkaExp->>Kafka: JMX query kafka.server:type=BrokerTopicMetrics, kafka.consumer:type=ConsumerFetcherManager
-        Kafka-->>KafkaExp: MessagesInPerSec, BytesInPerSec, consumer_lag_records_count
-        Prom->>KafkaExp: GET /metrics
-        KafkaExp-->>Prom: kafka_consumergroup_lag, kafka_topic_partition_current_offset, ...
-    end
+    PGBExp->>PGB: scrape PgBouncer stats endpoint
+    PGB-->>PGBExp: pool usage, client/server connection metrics
+    Prom->>PGBExp: GET /metrics
+    PGBExp-->>Prom: pgbouncer_* metrics
 
     Note over Prom: Store all time-series data in local TSDB
 

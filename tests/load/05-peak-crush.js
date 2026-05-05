@@ -1,56 +1,8 @@
 /**
- * 05-peak-crush.js — Maximum throughput / capacity ceiling test
- *
- * SCENARIO CONTEXT:
- *   "MonkeyTilt Black Friday" — the absolute worst-case the system needs to
- *   survive. Models what happens if every metric lines up against you at once:
- *   peak concurrent users, aggressive bet rate, minimal think time, sustained
- *   for long enough to flush out GC pauses, Redis pipelining pressure, Kafka
- *   producer queue fill, and PostgreSQL connection pool contention.
- *
- *   This test is NOT about passing every SLO — it is about finding the
- *   capacity ceiling gracefully. A good system degrades linearly (latency
- *   climbs but errors stay low); a bad system falls off a cliff (sudden
- *   error spike, OOM, dead-lock).
- *
- * TRAFFIC STAGES (designed to find the breaking point step-by-step):
- *   Stage 1 (60s):   0→300 VUs    — warm-up ramp (5 VU/sec)
- *   Stage 2 (60s):   hold 300     — baseline at 300 VUs (observe warm cache)
- *   Stage 3 (60s):   300→600 VUs  — pressure increase
- *   Stage 4 (60s):   hold 600     — sustain mid-load
- *   Stage 5 (45s):   600→800 VUs  — near-peak
- *   Stage 6 (300s):  hold 800 VUs — *** 5-MINUTE CRUSH *** (finds memory leaks,
- *                                   GC pauses, Kafka lag accumulation)
- *   Stage 7 (30s):   800→1000 VUs — push past the comfortable ceiling
- *   Stage 8 (120s):  hold 1000    — maximum load hold (2 min)
- *   Stage 9 (60s):   1000→0 VUs   — ramp-down (watch recovery speed)
- *   Total: ~13 min
- *
- * THINK TIME: 100–200 ms — aggressive but realistic for automated bots and
- *   whale API users. At 1000 VUs × 1 bet per 150 ms avg = ~6,666 bet attempts/sec.
- *   The system has proven 2,479/sec at 100 VUs with 50ms think time; this
- *   pushes ~2× beyond that capacity target.
- *
- * WHAT TO WATCH IN GRAFANA:
- *   - dicetilt_bet_processing_duration_ms P95: should stay <20ms at 800 VUs
- *   - dicetilt_redis_lua_execution_duration_ms: should stay <2ms
- *   - dicetilt_kafka_consumer_lag: should not grow unboundedly
- *   - dicetilt_double_spend_rejections_total: high is fine (correct behavior)
- *   - Node.js heap (from default metrics): GC pauses show as latency spikes
- *
- * GRACEFUL DEGRADATION SIGNALS (expected at >600 VUs):
- *   - INSUFFICIENT_BALANCE rate increases (wallets exhaust under fast betting)
- *   - P99 climbs while P95 stays relatively stable (tail elongation)
- *   - Kafka lag briefly grows but self-heals when VUs start closing
- *   NOT expected at any VU count:
- *   - INTERNAL_ERROR responses (crash/unhandled error)
- *   - WS upgrade failures (connection pool exhaustion)
- *   - Monotonically growing Kafka lag (consumer falling permanently behind)
- *
- * USAGE:
- *   k6 run tests/load/05-peak-crush.js
- *   k6 run --env BASE_URL=http://localhost:3000 --env WS_URL=ws://localhost:3000/ws \
- *           tests/load/05-peak-crush.js
+ * Scenario: maximum-throughput crush to probe graceful degradation and capacity ceiling.
+ * Profile: 0->1000 ramping VUs, 5–12 bets/session, 100–200ms think time, mixed ETH/SOL.
+ * SLO: P95 < 100ms, P99 < 300ms, INTERNAL_ERROR < 10, WS connect failures < 50, error rate < 5%.
+ * Usage: k6 run tests/load/05-peak-crush.js
  */
 
 import ws   from 'k6/ws';
@@ -243,40 +195,7 @@ export function handleSummary(data) {
   const sloErr    = errR < 0.05;
   const pass      = sloP95 && sloP99 && sloIntErr && sloConn && sloErr;
 
-  // Derive approximate capacity ceiling (VU count at which P95 first exceeded 20ms)
-  // Cannot compute from summary alone — direct user to Grafana timeseries.
-
-  console.log('\n╔══════════════════════════════════════════════════════════════╗');
-  console.log('║   05 — PEAK CRUSH (MonkeyTilt Black Friday, 0→1000 VUs)       ║');
-  console.log('╚══════════════════════════════════════════════════════════════╝');
-  console.log(`  Bets succeeded         : ${ok}`);
-  console.log(`  Total attempted        : ${total}`);
-  console.log(`  INSUFFICIENT_BALANCE   : ${insuf}  (expected — fast bets drain wallets)`);
-  console.log(`  Unexpected errors      : ${errors}`);
-  console.log(`  INTERNAL_ERRORs        : ${intErr}  ${intErr > 0 ? '← HARD FAILURE — investigate immediately' : '(none)'}`);
-  console.log(`  WS connect failures    : ${connF}  ${connF >= 50 ? '← pool exhaustion or FD limit' : ''}`);
-  console.log(`  WS connects total      : ${connOk}`);
-  console.log(`  Peak throughput (avg)  : ${(ok / durSec).toFixed(1)} bets/sec (over 13 min including ramps)`);
-  console.log('  ─────────────────────────────────────────────────────────────');
-  console.log('  Latency distribution:');
-  console.log(`    P50 : ${p50.toFixed(2)} ms`);
-  console.log(`    P75 : ${p75.toFixed(2)} ms`);
-  console.log(`    P95 : ${p95.toFixed(2)} ms  (SLO <100 ms)  ${sloP95 ? '✓ PASS' : '✗ FAIL'}`);
-  console.log(`    P99 : ${p99.toFixed(2)} ms  (SLO <300 ms)  ${sloP99 ? '✓ PASS' : '✗ FAIL'}`);
-  console.log('  ─────────────────────────────────────────────────────────────');
-  console.log(`  INTERNAL_ERROR count   : ${intErr}          (SLO <10)   ${sloIntErr ? '✓ PASS' : '✗ FAIL'}`);
-  console.log(`  WS connect fail count  : ${connF}          (SLO <50)   ${sloConn ? '✓ PASS' : '✗ FAIL'}`);
-  console.log(`  Unexpected error rate  : ${(errR * 100).toFixed(3)}%       (SLO <5%)   ${sloErr ? '✓ PASS' : '✗ FAIL'}`);
-  console.log('  ─────────────────────────────────────────────────────────────');
-  console.log(`  Overall result         : ${pass ? '✓ ALL SLOs PASSED' : '✗ SLO FAILURE'}`);
-  console.log('');
-  console.log('  POST-TEST CHECKLIST (check Grafana):');
-  console.log('  [ ] Kafka lag (dicetilt_kafka_consumer_lag) cleared after Stage 9');
-  console.log('  [ ] Redis Lua P95 (dicetilt_redis_lua_execution_duration_ms) stayed <5ms');
-  console.log('  [ ] Internal P95 (dicetilt_bet_processing_duration_ms) at 800 VUs (Stage 6)');
-  console.log('  [ ] Node.js heap did not grow monotonically during Stage 6');
-  console.log('  [ ] No OOMKilled containers in: docker compose ps');
-  console.log('══════════════════════════════════════════════════════════════════\n');
+  console.log(`05-peak-crush ${pass ? 'PASS' : 'FAIL'} | bets=${ok}/${total} intErr=${intErr} wsFail=${connF}/${connOk} P50=${p50.toFixed(1)}ms P75=${p75.toFixed(1)}ms P95=${p95.toFixed(1)}ms P99=${p99.toFixed(1)}ms errRate=${(errR * 100).toFixed(2)}% tput=${(ok / durSec).toFixed(1)}/s`);
 
   return {
     'results/05-peak-crush-summary.json': JSON.stringify(data, null, 2),

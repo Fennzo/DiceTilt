@@ -18,12 +18,10 @@ graph TD
 
     subgraph "Local Blockchain Nodes (zero-latency, pre-funded)"
         EVM["Local EVM Node — Hardhat/Anvil :8545"]
-        SOL["Local Solana Validator — solana-test-validator :8899 / :8900"]
     end
 
     User -->|"HTTP + WebSocket — localhost:80"| DT
     DT <-->|"ethers.js JSON-RPC — deposit events · tx signing"| EVM
-    DT <-->|"@solana/web3.js JSON-RPC — deposit events · tx signing"| SOL
 ```
 
 
@@ -51,7 +49,6 @@ graph TD
         PF["Provably Fair Worker — TypeScript · HMAC-SHA256 engine"]
         Ledger["Ledger Consumer — TypeScript · Kafka → Postgres"]
         EVMPayout["EVM Payout Worker — TypeScript · ethers.Wallet"]
-        SolPayout["Solana Payout Worker — TypeScript · treasury keypair"]
     end
 
     subgraph "Sovereign Web3 — Local EVM"
@@ -60,18 +57,10 @@ graph TD
         Treasury(("Treasury.sol — Local Deploy"))
     end
 
-    subgraph "Sovereign Web3 — Local Solana"
-        SolListen["Solana Listener Service — @solana/web3.js · Program.addEventListener"]
-        LocalSol(("solana-test-validator — :8899 HTTP :8900 WS"))
-        SolTreasury(("Anchor Treasury — Rust / Anchor"))
-    end
-
     subgraph "Observability Layer"
         Prom["Prometheus — Metrics Engine :9090"]
         Grafana["Grafana — Pre-Provisioned Dashboard :3001"]
-        RedisExp["Redis Exporter  :9121"]
-        PGExp["Postgres Exporter  :9187"]
-        KafkaExp["Kafka JMX Exporter  :5556"]
+        PGBExp["PgBouncer Exporter  :9127"]
     end
 
     Client <-->|"HTTP / WebSocket"| Nginx
@@ -80,7 +69,7 @@ graph TD
 
     API <-->|"EVAL Lua — atomic balance + nonce"| Redis
     API <-->|"SUBSCRIBE user:updates:*"| Redis
-    API <-->|"internal REST/gRPC"| PF
+    API <-->|"internal REST"| PF
     API -->|"BetResolved · WithdrawalRequested"| Kafka
 
     Ledger -->|"consume BetResolved · DepositReceived · WithdrawalCompleted"| Kafka
@@ -91,25 +80,15 @@ graph TD
     LocalEth <--> Treasury
     EVMListen -->|"DepositReceived  chain:ethereum"| Kafka
 
-    SolListen -->|"Program.addEventListener DepositEvent"| LocalSol
-    LocalSol <--> SolTreasury
-    SolListen -->|"DepositReceived  chain:solana"| Kafka
-
     EVMPayout -->|"consume WithdrawalRequested · produce WithdrawalCompleted"| Kafka
     EVMPayout -->|"treasury.payout() signed tx"| LocalEth
-
-    SolPayout -->|"consume WithdrawalRequested · produce WithdrawalCompleted"| Kafka
-    SolPayout -->|"signed SPL transfer"| LocalSol
 
     Prom -->|"scrape /metrics"| API
     Prom -->|"scrape /metrics"| PF
     Prom -->|"scrape /metrics"| Ledger
-    Prom -->|"scrape"| RedisExp
-    Prom -->|"scrape"| PGExp
-    Prom -->|"scrape JMX"| KafkaExp
-    RedisExp -.->|"queries"| Redis
-    PGExp -.->|"queries"| Postgres
-    KafkaExp -.->|"JMX"| Kafka
+    Prom -->|"scrape /metrics"| EVMListen
+    Prom -->|"scrape /metrics"| EVMPayout
+    Prom -->|"scrape"| PGBExp
     Grafana -->|"PromQL"| Prom
 ```
 
@@ -123,15 +102,15 @@ graph TD
 | Layer                   | Services                                                               | Primary Responsibility                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | ----------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **Ingress**             | Nginx                                                                  | Single entry point. HTTP/WS routing, CORS headers, WebSocket protocol upgrade (`Upgrade` header injection), static `index.html` serving.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| **Application**         | API Gateway                                                            | EIP-712 authentication, JWT issuance, WebSocket session lifecycle, Redis Lua atomic balance and nonce operations, Kafka event production for bets and withdrawals. **WebSocket auth:** JWT is sent as the **first WS frame** (`{ type: "AUTH", token }`) after a bare HTTP 101 upgrade — never in the URL or headers (prevents token logging). A 10-second timer closes unauthenticated sockets. Per-user connection cap: 5. Max frame size: 64 KB. **SUBSCRIBEs** to Redis channel `user:updates:{userId}` — on message, pushes BALANCE_UPDATE or WITHDRAWAL_COMPLETED to the user's WebSocket. Runs as a **Node.js cluster** (one worker per CPU core). The cluster primary serves aggregated Prometheus metrics on internal port 9091 via `prom-client AggregatorRegistry`; worker processes register an IPC handler by constructing `new AggregatorRegistry()` on startup. |
+| **Application**         | API Gateway                                                            | Wallet-signature authentication (`/auth/challenge` + `signMessage` + `/auth/verify`), JWT issuance, WebSocket session lifecycle, Redis Lua atomic balance and nonce operations, Kafka event production for bets and withdrawals. **WebSocket auth:** JWT is sent as the **first WS frame** (`{ type: "AUTH", token }`) after a bare HTTP 101 upgrade — never in the URL or headers (prevents token logging). A 10-second timer closes unauthenticated sockets. Per-user connection cap: 5. Max frame size: 64 KB. **SUBSCRIBEs** to Redis channel `user:updates:{userId}` — on message, pushes BALANCE_UPDATE or WITHDRAWAL_COMPLETED to the user's WebSocket. Runs as a **Node.js cluster** (one worker per CPU core). The cluster primary serves aggregated Prometheus metrics on internal port 9091 via `prom-client AggregatorRegistry`; worker processes register an IPC handler by constructing `new AggregatorRegistry()` on startup. |
 | **Cryptography**        | Provably Fair Worker                                                   | **Stateless** HMAC-SHA256 engine. All inputs (including server seed) are passed by the API Gateway — the PF Worker never accesses Postgres or Redis. Generates seeds and computes hashes as a pure function. Accessible only via internal `PF_AUTH_TOKEN`. CPU-bound hash work is executed through a `piscina` Worker Threads pool to avoid event-loop blocking under concurrency.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | **Messaging**           | Kafka (KRaft)                                                          | Durable async event bus. Decouples the synchronous sub-20ms game loop from async DB settlement, blockchain event processing, and payout execution.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| **Cache**               | Redis                                                                  | Primary balance and nonce read/write layer via atomic Lua scripts. Session registry with TTL-based revocation. Sliding window rate limiter via ZSET. **Pub/Sub:** Ledger Consumer PUBLISHes to `user:updates:{userId}` after balance/withdrawal updates; API Gateway SUBSCRIBEs and pushes BALANCE_UPDATE / WITHDRAWAL_COMPLETED to WebSocket clients in real time.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **Cache**               | Redis                                                                  | Primary balance and nonce read/write layer via atomic Lua scripts. Session registry with TTL-based revocation. Fixed-window rate limiter via Lua-backed `INCR` counters. **Pub/Sub:** Ledger Consumer PUBLISHes to `user:updates:{userId}` after balance/withdrawal updates; API Gateway SUBSCRIBEs and pushes BALANCE_UPDATE / WITHDRAWAL_COMPLETED to WebSocket clients in real time.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | **Persistence**         | PostgreSQL                                                             | Canonical ACID ledger. Receives idempotent `ON CONFLICT DO NOTHING` inserts from the Ledger Consumer. Source of truth for balance hydration on Redis cache miss.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | **Settlement**          | Ledger Consumer                                                        | Kafka consumer writing `BetResolved`, `DepositReceived`, and `WithdrawalCompleted` events to Postgres. Uses `eachBatch` with per-`user_id` grouping and `Promise.all` across groups so cross-user writes run in parallel while preserving per-user ordering. Routes failed messages to **per-topic DLQs** (`BetResolved-DLQ`, `DepositReceived-DLQ`, `WithdrawalCompleted-DLQ`) after exhausting retries. After updating Postgres and Redis, **PUBLISHes** to Redis channel `user:updates:{userId}` so the API Gateway can push real-time BALANCE_UPDATE / WITHDRAWAL_COMPLETED to WebSocket clients.                                                                                                                                                                                                                                                                          |
 | **Blockchain (EVM)**    | EVM Listener, EVM Payout, Hardhat/Anvil, Treasury.sol                  | Local Ethereum chain. Event-driven deposit detection and isolated transaction signing for withdrawals. Private key never leaves the Payout Worker container.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | **Blockchain (Solana)** | Solana Listener, Solana Payout, solana-test-validator, Anchor Treasury | *(Architecture stub — not yet implemented in this PoC. EVM layer is fully functional.)* Local Solana chain design mirrors the EVM layer: parallel deposit and withdrawal pipeline, completely independent of EVM. Multi-stage Docker build: Rust stage compiles Anchor program; Solana stage deploys it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| **Observability**       | Prometheus, Grafana, 3 exporters                                       | Pull-based metrics collection from all TypeScript services (`prom-client`) and infrastructure exporters. Pre-provisioned Grafana dashboard auto-loads at boot.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| **Observability**       | Prometheus, Grafana, PgBouncer exporter                                | Pull-based metrics collection from all TypeScript services (`prom-client`) plus PgBouncer infrastructure metrics. Pre-provisioned Grafana dashboard auto-loads at boot.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | **Automation**          | Ansible, Ansible Vault *(production only)*, EDA                        | Deployment automation, encrypted secret management for payout private keys (production — PoC uses deterministic keys from `.env`), automated Kafka broker remediation via Prometheus alerting → EDA rulebook.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 
 
@@ -156,7 +135,7 @@ The PF Worker uses `prefix: 'dicetilt_pf_'` for its **default Node.js runtime me
 - TypeScript defines source language and type safety; runtime concurrency characteristics come from Node.js (`worker_threads`, `cluster`, libuv event loop).
 - Provably Fair hash computation is CPU-bound and therefore executed in a `piscina` Worker Threads pool.
 - API Gateway uses Node.js `cluster` to run one worker process per CPU core.
-- Kafka `BetResolved` topic uses 3 partitions; with 3 Ledger Consumer replicas in the same consumer group, this yields 3 parallel partition processors.
+- Kafka `BetResolved` topic uses 3 partitions. The default Compose stack runs one Ledger Consumer instance; parallelism scales with additional consumer replicas in the same group.
 - Ledger Consumer processes batches with per-user grouping and parallel writes across users, preserving per-user order while increasing throughput.
 
 ### 3.3 Redis Pub/Sub — Real-Time Balance & Withdrawal Updates
@@ -178,7 +157,7 @@ Without this, the user's balance would not update after a deposit until they pla
 | Service                       | Language   | Produces (Kafka)                          | Consumes (Kafka)                                        | Key Dependencies                                                                                                                                                             |
 | ----------------------------- | ---------- | ----------------------------------------- | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | API Gateway                   | TypeScript | `BetResolved`, `WithdrawalRequested`      | —                                                       | Redis (Lua, Pub/Sub), PF Worker, Kafka, Postgres (hydration)                                                                                                                 |
-| Provably Fair Worker          | TypeScript | —                                         | —                                                       | None (internal gRPC/HTTP only)                                                                                                                                               |
+| Provably Fair Worker          | TypeScript | —                                         | —                                                       | None (internal HTTP only)                                                                                                                                                     |
 | Ledger Consumer               | TypeScript | `BetResolved-DLQ` *(on failure)*          | `BetResolved`, `DepositReceived`, `WithdrawalCompleted` | PostgreSQL, Kafka, Redis                                                                                                                                                     |
 | EVM Listener                  | TypeScript | `DepositReceived` (`chain: ethereum`)     | —                                                       | Kafka, Hardhat/Anvil                                                                                                                                                         |
 | EVM Payout Worker             | TypeScript | `WithdrawalCompleted` (`chain: ethereum`) | `WithdrawalRequested` (`chain: ethereum`)               | Kafka, Hardhat/Anvil, `.env` (PoC) / Ansible Vault (prod)                                                                                                                    |
@@ -204,12 +183,9 @@ Without this, the user's balance would not update after a deposit until they pla
 | PostgreSQL            | 5432            | —                     | TCP                      | Internal only                                                                                                                                                                                                                                                                       |
 | Kafka (KRaft)         | 29092           | —                     | Kafka Protocol           | Internal broker listener                                                                                                                                                                                                                                                            |
 | Hardhat / Anvil       | 8545            | **8545**              | HTTP + WS JSON-RPC       | Exposed for frontend burner wallet signing                                                                                                                                                                                                                                          |
-| Solana Validator      | 8899 / 8900     | **8899 / 8900**       | HTTP / WS JSON-RPC       | Exposed for frontend Solana signing                                                                                                                                                                                                                                                 |
 | Prometheus            | 9090            | **9090**              | HTTP                     | Direct metric access                                                                                                                                                                                                                                                                |
 | Grafana               | 3000 (internal) | **3001**              | HTTP                     | Recruiter dashboard                                                                                                                                                                                                                                                                 |
-| Redis Exporter        | 9121            | —                     | HTTP (Prometheus scrape) | Internal only                                                                                                                                                                                                                                                                       |
-| Postgres Exporter     | 9187            | —                     | HTTP (Prometheus scrape) | Internal only                                                                                                                                                                                                                                                                       |
-| Kafka JMX Exporter    | 5556            | —                     | HTTP (Prometheus scrape) | Internal only                                                                                                                                                                                                                                                                       |
+| PgBouncer Exporter    | 9127            | —                     | HTTP (Prometheus scrape) | Internal only                                                                                                                                                                                                                                                                       |
 
 
 ---
@@ -239,8 +215,6 @@ graph LR
         Ledger["Ledger Consumer — (internal :3030)"]
         EVMListen["EVM Listener — (internal :3010)"]
         EVMPay["EVM Payout Worker — holds private key — (internal :3020)"]
-        SolListen["Solana Listener *(stub)*"]
-        SolPay["Solana Payout Worker *(stub)*"]
         Prom["Prometheus — (host:9090 → container:9090)"]
         Grafana["Grafana — (host:3001 → container:3000)"]
     end
@@ -263,9 +237,7 @@ graph LR
     Ledger --> Redis
 
     EVMListen --> Kafka
-    SolListen --> Kafka
     EVMPay --> Kafka
-    SolPay --> Kafka
 
     Prom -->|":9091/metrics (cluster aggregated)"| API
     Prom --> PF
@@ -278,7 +250,7 @@ graph LR
 
 
 
-> **Security note (PoC):** The payout workers (`EVMPay`, `SolPay`) have no published host ports and receive no inbound routes from Nginx. Their only communication is outbound Kafka consumption and outbound blockchain RPC calls. In the PoC, private keys are deterministic Hardhat/Solana test keys loaded from `.env` (safe — local chain, no real value). **Production deployments MUST enforce strict network isolation between the ingress tier and the signing tier.** The signing tier (payout workers) must be placed on a separate network segment with no direct ingress routes; egress-only rules limited to blockchain RPC and Kafka; secure key injection via vaults (Ansible Vault, HashiCorp Vault, AWS Secrets Manager, etc.); and additional controls such as network policies, separate VPCs/VNets, or air-gapped environments depending on asset value.
+> **Security note (PoC):** The payout worker (`EVMPay`) has no published host ports and receives no inbound routes from Nginx. Its only communication is outbound Kafka consumption and outbound blockchain RPC calls. In the PoC, private keys are deterministic Hardhat test keys loaded from `.env` (safe — local chain, no real value). **Production deployments MUST enforce strict network isolation between the ingress tier and the signing tier.** The signing tier (payout workers) must be placed on a separate network segment with no direct ingress routes; egress-only rules limited to blockchain RPC and Kafka; secure key injection via vaults (Ansible Vault, HashiCorp Vault, AWS Secrets Manager, etc.); and additional controls such as network policies, separate VPCs/VNets, or air-gapped environments depending on asset value.
 >
 > **Note on Redis host port 6380:** Redis is published on host port `6380` for local debugging (e.g., `redis-cli -p 6380`). No authentication is configured on this debug port. It should be removed or firewalled in any non-local deployment.
 

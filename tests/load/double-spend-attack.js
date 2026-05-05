@@ -1,19 +1,8 @@
 /**
- * double-spend-attack.js — 50-VU simultaneous bet attack from a single wallet
- *
- * Simulates the worst-case double-spend scenario: one wallet sending 50
- * concurrent bets all at once. All bets use the same userId so the Lua
- * atomic balance deduction must serialize them correctly without allowing
- * any bet that would overdraw the balance.
- *
- * Pass/fail criteria:
- *   - No bet that should be rejected is accepted (double-spend rejections
- *     + INSUFFICIENT_BALANCE errors = bets that exceed balance)
- *   - Total accepted bets * wagerAmount <= initial balance
- *   - dicetilt_double_spend_rejections_total metric increments
- *
- * Usage:
- *   k6 run tests/load/double-spend-attack.js
+ * Scenario: concurrent same-wallet attack to validate atomic balance guard behavior.
+ * Profile: 50 constant VUs, one shared wallet/token, immediate simultaneous bet fire.
+ * SLO: INSUFFICIENT_BALANCE rejections observed and unexpected error ratio < 5%.
+ * Usage: k6 run tests/load/double-spend-attack.js
  */
 
 import ws from 'k6/ws';
@@ -130,7 +119,6 @@ export function handleSummary(data) {
   const accepted = data.metrics['attack_accepted_bets']?.values?.count ?? 0;
   const rejected = data.metrics['attack_rejected_bets']?.values?.count ?? 0;
   const overdrawn = data.metrics['attack_overdrawn_bets']?.values?.count ?? 0;
-  const errRate   = data.metrics['attack_error_rate']?.values?.rate ?? 0;
   const total = accepted + rejected;
 
   // Rejection rate: how often the atomic guard fires vs total attempts
@@ -145,16 +133,8 @@ export function handleSummary(data) {
   const guardActive = overdrawn > 0;
   const lowUnexpected = unexpectedErrors / Math.max(total, 1) < 0.05;
 
-  console.log('\n========== DOUBLE-SPEND ATTACK REPORT ==========');
-  console.log(`Total bets attempted  : ${total}`);
-  console.log(`Bets accepted         : ${accepted}`);
-  console.log(`Bets rejected         : ${rejected} (${rejectionPct}%)`);
-  console.log(`  ↳ INSUFFICIENT_BAL  : ${overdrawn} (Lua atomic guard firing)`);
-  console.log(`  ↳ Unexpected errors : ${unexpectedErrors}`);
-  console.log(`Atomic guard active   : ${guardActive ? '✓ YES — INSUFFICIENT_BALANCE rejections observed' : '✗ NO — check Lua DEDUCT script'}`);
-  console.log(`Unexpected error rate : ${(unexpectedErrors / Math.max(total, 1) * 100).toFixed(2)}% ${lowUnexpected ? '✓ PASS (<5%)' : '✗ FAIL'}`);
-  console.log('NOTE: accepted > initial_balance/wager is expected (wins replenish balance)');
-  console.log('=================================================\n');
+  const pass = guardActive && lowUnexpected;
+  console.log(`double-spend-attack ${pass ? 'PASS' : 'FAIL'} | attempted=${total} accepted=${accepted} rejected=${rejected} overdrawn=${overdrawn} unexpected=${unexpectedErrors} rejectionRate=${rejectionPct}%`);
 
   return {
     'results/double-spend-summary.json': JSON.stringify(data, null, 2),
