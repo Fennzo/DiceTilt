@@ -30,3 +30,8 @@ scrape_configs:
     static_configs:
       - targets: ['ledger-consumer:3030']
     metrics_path: /metrics
+
+  - job_name: 'pgbouncer'
+    static_configs:
+      - targets: ['pgbouncer-exporter:9127']
+    metrics_path: /metrics

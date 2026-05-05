@@ -1,7 +1,7 @@
 import { WebSocketServer, type WebSocket } from 'ws';
 import type http from 'node:http';
 import jwt from 'jsonwebtoken';
-import { v4 as uuidv4 } from 'uuid';
+import * as uuid from 'uuid';
 import {
   ClientMessageSchema,
   AuthMessageSchema,
@@ -18,6 +18,8 @@ import {
   atomicReleaseEscrow,
   getServerSeed,
   checkRateLimit,
+  reserveWsConnectionSlot,
+  releaseWsConnectionSlot,
   redisSub,
   type EscrowResult,
 } from './redis.service.js';
@@ -41,6 +43,13 @@ import {
 import { createLoggers, pseudonymize } from '@dicetilt/logger';
 
 const { app: log, audit, security } = createLoggers('api-gateway');
+const uuidv7 = (() => {
+  const candidate = (uuid as unknown as { v7?: () => string }).v7;
+  if (typeof candidate !== 'function') {
+    throw new Error('uuid.v7 is unavailable. Ensure uuid@10+ is installed.');
+  }
+  return candidate;
+})();
 
 // C3/H6 — Escrow error path: release escrowed wager back to available balance.
 // Retries with exponential backoff — a transient Redis error must not silently
@@ -215,21 +224,42 @@ export function setupWebSocket(server: http.Server): WebSocketServer {
         return;
       }
 
-      // Fix #6 — enforce per-user connection limit. Add first, then re-check atomically:
-      // if we exceeded the limit (race with concurrent connections), remove and reject.
-      if (!clients.has(userId)) clients.set(userId, new Set());
-      clients.get(userId)!.add(ws);
-      activeWsConnections.inc();
+      // Issue #7 — global per-user WS cap via Redis (cluster workers cannot share in-memory Maps).
+      let slotGranted = false;
+      try {
+        slotGranted = await reserveWsConnectionSlot(
+          userId,
+          config.maxWsConnectionsPerUser,
+          config.wsConnCounterTtlSec,
+        );
+      } catch (err) {
+        redisErrorRejections.inc();
+        log.error('Redis error on WS slot reserve — closing connection (fail closed)', {
+          event: 'REDIS_UNAVAILABLE',
+          userId: pseudonymize(userId),
+          error: String(err),
+          stack: (err as Error).stack,
+        });
+        security.warn('WS connect rejected — Redis unavailable', { event: 'REDIS_UNAVAILABLE', userId: pseudonymize(userId), path: 'ws_slot_reserve' });
+        sendError(ws, WebSocketErrorCode.INTERNAL_ERROR, 'Service temporarily unavailable');
+        ws.close();
+        return;
+      }
 
-      const userConns = clients.get(userId)!;
-      if (userConns.size > config.maxWsConnectionsPerUser) {
-        userConns.delete(ws);
-        activeWsConnections.dec();
+      if (!slotGranted) {
         authFailures.inc();
         security.warn('WS connection limit exceeded', { event: 'WS_CONN_LIMIT', userId: pseudonymize(userId), limit: config.maxWsConnectionsPerUser });
         ws.close(1008, 'connection limit reached');
         return;
       }
+
+      let userSockets = clients.get(userId);
+      if (!userSockets) {
+        userSockets = new Set();
+        clients.set(userId, userSockets);
+      }
+      userSockets.add(ws);
+      activeWsConnections.inc();
 
       // Fix #8 — confirm successful auth to the client before accepting game messages.
       sendJson(ws, { type: 'AUTH_OK' });
@@ -239,6 +269,13 @@ export function setupWebSocket(server: http.Server): WebSocketServer {
         activeWsConnections.dec();
         clients.get(userId)?.delete(ws);
         if (clients.get(userId)?.size === 0) clients.delete(userId);
+        void releaseWsConnectionSlot(userId).catch((err) =>
+          log.error('Redis error releasing WS slot', {
+            event: 'REDIS_UNAVAILABLE',
+            userId: pseudonymize(userId),
+            error: String(err),
+          }),
+        );
         log.info('WebSocket disconnected', { event: 'WS_DISCONNECTED', userId: pseudonymize(userId) });
       });
 
@@ -283,7 +320,7 @@ async function handleBet(
   const betStart = performance.now();
   const { wagerAmount, clientSeed, chain, currency, target, direction } = msg;
 
-  // Sliding-window rate limit: checked before any balance operation to reject cheaply.
+  // Fixed-window rate limit: checked before any balance operation to reject cheaply.
   // Fail closed on Redis errors — reject bet and return INTERNAL_ERROR (secure default).
   try {
     const allowed = await checkRateLimit(userId, 'bet', config.betRateLimitWindowSec, config.betRateLimitMax);
@@ -377,7 +414,7 @@ async function handleBet(
   // settleBetAsync and Kafka publish are fire-and-forget to keep response latency minimal.
   // Frontend adds payoutAmount on win (Bug Fix #3) → displays correct post-settle balance.
   const optimisticBalance = escrowResult.newBalance;
-  const betId = uuidv4();
+  const betId = uuidv7();
   const durationMs = Math.round(performance.now() - betStart);
   const event: BetResolvedEvent = {
     bet_id: betId,

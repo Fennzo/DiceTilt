@@ -11,10 +11,10 @@
 | ------------------- | -------------------------------------------------------------------------- |
 | **Language**        | TypeScript (strict mode), Rust (Trade Router stub)                         |
 | **Runtime**         | Node.js 20+, pnpm workspaces (monorepo)                                    |
-| **Data**            | PostgreSQL 16, Redis 7, Apache Kafka (KRaft mode)                          |
+| **Data**            | PostgreSQL 16, PgBouncer (transaction mode), Redis 7, Apache Kafka (KRaft mode) |
 | **Blockchain**      | ethers.js (EVM), Hardhat/Anvil (local EVM node)                            |
 | **Smart Contracts** | Solidity — Treasury.sol (EVM, fully deployed)                              |
-| **Infrastructure**  | Docker Compose (14 services), Nginx (reverse proxy, WebSocket)             |
+| **Infrastructure**  | Docker Compose (16 services), Nginx (reverse proxy, WebSocket)             |
 | **Observability**   | Prometheus, Grafana, prom-client, Redis/Postgres/Kafka exporters           |
 | **Testing**         | Jest (10 unit tests), k6 (5-scenario stress suite), integration test suite |
 | **Validation**      | Zod schemas, three-layer input validation                                  |
@@ -81,7 +81,7 @@
 
 | Technology                     | Role                                                        |
 | ------------------------------ | ----------------------------------------------------------- |
-| **Docker Compose**             | Orchestration (14 services)                                 |
+| **Docker Compose**             | Orchestration (16 services)                                 |
 | **Nginx**                      | Reverse proxy, CORS, WebSocket upgrade, static file serving |
 | **Ansible**                    | Deployment automation (production)                          |
 | **Ansible Vault**              | Secret management (production)                              |
@@ -172,7 +172,7 @@
 | **Payout Nonce Safety**     | `payoutBusy` mutex (atomic in Node.js single-thread) + retry loop on `NONCE_EXPIRED`. Prevents ghost-txn nonce conflicts from KafkaJS concurrent-partition processing.                                                                                                     |
 | **EIP-712 Auth**            | Cryptographic wallet signature verification on login. JWT session. WebSocket auth via first frame (not URL token) with 10s timeout for unauthenticated connections. `maxPayload: 64KB` against oversized frame attacks.                                                    |
 | **Provably Fair**           | Server seed committed via SHA-256 before betting. HMAC-SHA256(serverSeed, clientSeed:nonce). Seed fetched fresh from Redis per bet. Full rotation lifecycle with server-side attestation (`serverVerified: true`) + immutable `seed_commitment_audit` table in PostgreSQL. |
-| **Rate Limiting**           | Redis ZSET sliding window, Lua atomic. 30 bets/sec per user. Fails open on Redis error — availability over enforcement on transient blip.                                                                                                                                  |
+| **Rate Limiting**           | Redis fixed-window counters (`INCR` + `PEXPIRE`) via Lua. 30 bets/sec per user. Boundary burst tradeoff accepted for lower hot-path Redis cost.                                                                                                                           |
 | **Input Validation**        | Three layers: frontend (UX), Zod at Gateway (typed enforcement), PostgreSQL CHECK constraints (safety net).                                                                                                                                                                |
 | **DLQ Routing**             | Failed Kafka messages → `*-DLQ` topics for audit. Zero data loss on processing failures.                                                                                                                                                                                   |
 | **Graceful Shutdown**       | SIGTERM/SIGINT handlers. Kafka offset commit, connection pool drain.                                                                                                                                                                                                       |
@@ -280,7 +280,7 @@ DiceTiltClaude/
 │   ├── unit/                     # Jest: PF crypto, Lua atomicity (10 tests)
 │   └── load/                     # k6: 5-scenario stress suite + double-spend attack
 ├── documentation/                # Architecture, sequence diagrams, Kafka topology, Solana notes
-└── docker-compose.yml            # 14 services (12 persistent + 2 init), healthchecks, dependency ordering
+└── docker-compose.yml            # 16 services (14 persistent + 2 init), healthchecks, dependency ordering
 ```
 
 ---

@@ -95,6 +95,9 @@ if (cluster.isPrimary) {
   // requests from the primary. Without this, workers silently never respond.
   new AggregatorRegistry(); // eslint-disable-line no-new
   const app = express();
+  // Trust one reverse-proxy hop (Nginx) so req.ip reflects X-Forwarded-For.
+  // Without this, IP-based auth limits collapse to the Nginx container IP.
+  app.set('trust proxy', 1);
   app.use(express.json());
   app.use(authRouter);
   app.use(pfRouter);
@@ -105,18 +108,12 @@ if (cluster.isPrimary) {
   }
   // Per-worker metrics (individual worker view; aggregated view on primary:9091)
   app.get('/metrics', metricsHandler as express.RequestHandler);
-  app.get('/api/v1/config', (_req, res) => {
-    res.json({
-      evmRpcUrl: config.publicEvmRpcUrl,
-      treasuryContractAddress: config.treasuryContractAddress || null,
-    });
-  });
 
   app.use((req, res) => {
     res.status(404).json({ error: 'not_found', path: req.path });
   });
 
-  async function start() {
+  const start = async (): Promise<void> => {
     await connectProducer();
 
     const server = http.createServer(app);
@@ -187,7 +184,7 @@ if (cluster.isPrimary) {
     };
     process.on('SIGTERM', () => onSignal('SIGTERM'));
     process.on('SIGINT', () => onSignal('SIGINT'));
-  }
+  };
 
   process.on('unhandledRejection', (reason) => {
     log.error('Unhandled rejection', { event: 'STARTUP_FAILED', error: String(reason) });

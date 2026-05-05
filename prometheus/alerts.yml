@@ -14,3 +14,32 @@ groups:
         annotations:
           summary: "Redis unavailable — bets being rejected (fail closed)"
           description: "API Gateway is rejecting bets due to Redis unavailability. Check Redis connectivity and health."
+
+      # PgBouncer saturation signals.
+      # client_waiting > 0 means app clients are queued waiting for a server connection.
+      - alert: PgBouncerClientWaitersWarning
+        expr: sum(pgbouncer_pools_client_waiting_connections) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PgBouncer has waiting clients"
+          description: "One or more clients are waiting for DB server connections in PgBouncer."
+
+      - alert: PgBouncerClientWaitersCritical
+        expr: sum(pgbouncer_pools_client_waiting_connections) > 20
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PgBouncer wait queue is high"
+          description: "PgBouncer client waiting queue is > 20, indicating pool saturation and likely request latency."
+
+      - alert: PgBouncerServerPoolSaturationHigh
+        expr: (sum(pgbouncer_pools_server_active_connections) / clamp_min(sum(pgbouncer_pools_server_active_connections + pgbouncer_pools_server_idle_connections), 1)) > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PgBouncer server pool saturation > 90%"
+          description: "Most PgBouncer server connections are active for sustained period; consider increasing pool size or scaling Postgres."

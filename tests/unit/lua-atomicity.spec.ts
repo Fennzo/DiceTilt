@@ -126,3 +126,96 @@ describe('Redis Lua Atomicity Tests', () => {
     expect(finalNonce).toBe(5);
   });
 });
+
+// Keep scripts aligned with services/api-gateway/src/redis.service.ts (WS_CONN_*_LUA).
+const WS_CONN_RESERVE_LUA = `
+local key = KEYS[1]
+local limit = tonumber(ARGV[1])
+local ttlSec = tonumber(ARGV[2])
+local n = tonumber(redis.call('INCR', key))
+if n > limit then
+  redis.call('DECR', key)
+  local left = tonumber(redis.call('GET', key) or '0')
+  if left <= 0 then
+    redis.call('DEL', key)
+  end
+  return 0
+end
+if ttlSec > 0 then
+  redis.call('EXPIRE', key, ttlSec)
+end
+return 1
+`;
+
+const WS_CONN_RELEASE_LUA = `
+local key = KEYS[1]
+local v = redis.call('GET', key)
+if not v or tonumber(v) <= 0 then
+  return 0
+end
+redis.call('DECR', key)
+local left = redis.call('GET', key)
+if not left or tonumber(left) <= 0 then
+  redis.call('DEL', key)
+end
+return 1
+`;
+
+describe('WebSocket connection slot Lua', () => {
+  let redis: Redis;
+  const testUserId = 'test-user-ws-slot';
+  const slotKey = `ws:conns:${testUserId}`;
+  const limit = 5;
+  const ttlSec = 3600;
+
+  beforeAll(async () => {
+    redis = new Redis(REDIS_URL);
+  });
+
+  afterAll(async () => {
+    await redis.del(slotKey);
+    await redis.quit();
+  });
+
+  beforeEach(async () => {
+    await redis.del(slotKey);
+  });
+
+  test('allows exactly limit reserves then denies', async () => {
+    for (let i = 0; i < limit; i++) {
+      const ok = (await redis.eval(WS_CONN_RESERVE_LUA, 1, slotKey, limit, ttlSec)) as number;
+      expect(ok).toBe(1);
+    }
+    const denied = (await redis.eval(WS_CONN_RESERVE_LUA, 1, slotKey, limit, ttlSec)) as number;
+    expect(denied).toBe(0);
+    const count = await redis.get(slotKey);
+    expect(count).toBe(String(limit));
+  });
+
+  test('release frees a slot for another reserve', async () => {
+    for (let i = 0; i < limit; i++) {
+      await redis.eval(WS_CONN_RESERVE_LUA, 1, slotKey, limit, ttlSec);
+    }
+    await redis.eval(WS_CONN_RELEASE_LUA, 1, slotKey);
+    const ok = (await redis.eval(WS_CONN_RESERVE_LUA, 1, slotKey, limit, ttlSec)) as number;
+    expect(ok).toBe(1);
+    expect(await redis.get(slotKey)).toBe(String(limit));
+  });
+
+  test('concurrency: never exceeds limit active reservations', async () => {
+    const attempts = 50;
+    const lowLimit = 5;
+    await redis.del(slotKey);
+
+    const results = await Promise.all(
+      Array.from({ length: attempts }, () =>
+        redis.eval(WS_CONN_RESERVE_LUA, 1, slotKey, lowLimit, ttlSec) as Promise<number>,
+      ),
+    );
+
+    const granted = results.filter((r) => r === 1).length;
+    expect(granted).toBe(lowLimit);
+
+    expect(await redis.get(slotKey)).toBe(String(lowLimit));
+  });
+});

@@ -8,10 +8,7 @@ function getTreasuryContractAddress(): string {
   return '';
 }
 
-// M1 — fail closed on missing secrets in non-test environments. TEST_MODE=true
-// (k6 / local dev / demo) still accepts the known dev values so existing
-// workflows don't need secret injection, but any other deploy must provide
-// real secrets. Matches the fail-fast pattern used for HOUSE_EDGE_PCT below.
+// Fail closed on missing secrets unless TEST_MODE=true (k6/dev/demo).
 const _testMode = process.env['TEST_MODE'] === 'true';
 function requireSecret(name: string, devFallback: string): string {
   const v = process.env[name];
@@ -60,6 +57,8 @@ export const config = {
   wsAuthTimeoutMs: parseInt(process.env['WS_AUTH_TIMEOUT_MS'] ?? '10000', 10),
   wsMaxPayloadBytes: parseInt(process.env['WS_MAX_PAYLOAD_BYTES'] ?? '65536', 10),    // 64 KB
   maxWsConnectionsPerUser: parseInt(process.env['MAX_WS_CONNS_PER_USER'] ?? '5', 10),
+  // TTL on ws:conns:{userId} — drops phantom counts if a worker dies without DECR (refresh on each reserve).
+  wsConnCounterTtlSec: parseInt(process.env['WS_CONN_COUNTER_TTL_SEC'] ?? process.env['SESSION_TTL_SEC'] ?? '86400', 10),
 
   // Bet / game
   betRateLimitWindowSec: parseInt(process.env['BET_RATE_LIMIT_WINDOW_SEC'] ?? '1', 10),

@@ -21,6 +21,34 @@ services:
     networks:
       - backend-net
 
+  pgbouncer:
+    build:
+      context: .
+      dockerfile: docker/pgbouncer.Dockerfile
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      PGBOUNCER_PORT: "6432"
+      PGBOUNCER_POOL_MODE: "transaction"
+      PGBOUNCER_MAX_CLIENT_CONN: "300"
+      PGBOUNCER_DEFAULT_POOL_SIZE: "25"
+      PGBOUNCER_MIN_POOL_SIZE: "5"
+      PGBOUNCER_RESERVE_POOL_SIZE: "5"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h localhost -p 6432 -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - backend-net
+
   redis:
     image: redis:7-alpine
     command: redis-server --appendonly yes
@@ -144,7 +172,7 @@ services:
       KAFKA_BROKERS: kafka:29092
       PF_WORKER_URL: http://pf-worker:3001
       PF_AUTH_TOKEN: ${PF_AUTH_TOKEN}
-      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@pgbouncer:6432/${POSTGRES_DB}
       EVM_RPC_URL: http://evm-node:8545
       PUBLIC_EVM_RPC_URL: http://localhost:8545
       # TREASURY_CONTRACT_ADDRESS is intentionally NOT set here.
@@ -155,6 +183,8 @@ services:
       CLUSTER_WORKERS: "4"
     depends_on:
       postgres:
+        condition: service_healthy
+      pgbouncer:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -176,6 +206,16 @@ services:
   # =============================================================
   # FRONTEND & OBSERVABILITY
   # =============================================================
+
+  pgbouncer-exporter:
+    image: prometheuscommunity/pgbouncer-exporter:latest
+    environment:
+      PGBOUNCER_EXPORTER_CONNECTION_STRING: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@pgbouncer:6432/${POSTGRES_DB}?sslmode=disable
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+    networks:
+      - backend-net
 
   nginx:
     image: nginx:alpine
@@ -206,6 +246,8 @@ services:
         condition: service_healthy
       pf-worker:
         condition: service_healthy
+      pgbouncer-exporter:
+        condition: service_started
     ports:
       - "9090:9090"
     healthcheck:
@@ -250,13 +292,15 @@ services:
       EVM_RPC_URL: http://evm-node:8545
       EVM_RPC_WS_URL: ws://evm-node:8545
       KAFKA_BROKERS: kafka:29092
-      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@pgbouncer:6432/${POSTGRES_DB}
       LOG_LEVEL: "info"
     volumes:
       - treasury-addr:/shared:ro
       - ./logs/evm-listener:/app/logs
     depends_on:
       postgres:
+        condition: service_healthy
+      pgbouncer:
         condition: service_healthy
       kafka-init:
         condition: service_completed_successfully
@@ -308,13 +352,15 @@ services:
     environment:
       KAFKA_BROKERS: kafka:29092
       LEDGER_KAFKA_GROUP_ID: ledger-persistent-group
-      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@pgbouncer:6432/${POSTGRES_DB}
       REDIS_URI: redis://redis:6379
       LOG_LEVEL: "info"
     volumes:
       - ./logs/ledger-consumer:/app/logs
     depends_on:
       postgres:
+        condition: service_healthy
+      pgbouncer:
         condition: service_healthy
       redis:
         condition: service_healthy

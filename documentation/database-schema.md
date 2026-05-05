@@ -335,7 +335,7 @@ Immutable append-only log of every server seed lifecycle. One row is inserted at
 
 | Column | Type | Constraints | Rationale |
 |---|---|---|---|
-| `bet_id` | `UUID` | `PRIMARY KEY` | **Supplied by API Gateway** — NOT `DEFAULT uuid_generate_v4()`. This is the Kafka message's idempotency key. The Ledger Consumer uses `ON CONFLICT (bet_id) DO NOTHING` for exactly-once DB writes. |
+| `bet_id` | `UUID` | `PRIMARY KEY` | **Supplied by API Gateway** — NOT DB-generated. API Gateway emits time-ordered UUID v7 values for better insert locality on the `transactions` primary-key B-tree while still serving as the Kafka idempotency key. Ledger Consumer uses `ON CONFLICT (bet_id) DO NOTHING` for exactly-once writes. |
 | `user_id` | `UUID` | `NOT NULL REFERENCES users(id) ON DELETE RESTRICT` | `RESTRICT` — prevents deleting a user who has transaction history. Financial audit trail must be preserved. |
 | `wager_amount` | `NUMERIC(30,8)` | `NOT NULL`, `CHECK > 0` | Cannot be zero or negative. A zero-wager bet is a logic error. Enforced at DB level as a final safety net after Zod Layer 2 validation. |
 | `payout_amount` | `NUMERIC(30,8)` | `NOT NULL DEFAULT 0`, `CHECK >= 0` | Zero on a loss (not NULL). Non-negative — a negative payout is a logic error. |
@@ -390,7 +390,7 @@ Audit and idempotency table for `WithdrawalCompleted` Kafka events. One row is i
 | `idx_transactions_user_executed` | `transactions` | `(user_id, executed_at DESC)` | B-tree | Compound: user-specific history sorted by recency — most frequent query pattern |
 | `idx_users_active_seed` | `users` | `(active_server_seed)` | B-tree | Provably Fair status checks: lookup current seed commitment by seed value |
 
-> **Note on `transactions`:** The table is append-only and high-frequency. All writes are inserts (never updates or deletes). The primary workload is write-heavy (Ledger Consumer inserts) with infrequent full-history reads (audit). Indexes are intentionally minimal to avoid write amplification.
+> **Note on `transactions`:** The table is append-only and high-frequency. All writes are inserts (never updates or deletes). The primary workload is write-heavy (Ledger Consumer inserts) with infrequent full-history reads (audit). API Gateway now uses UUID v7 for `bet_id`, which keeps new inserts near the end of the PK B-tree and reduces random-page churn versus UUID v4.
 >
 > **Note on `deposits.tx_hash`:** The `UNIQUE` constraint on `tx_hash` already provides an implicit index that the Ledger Consumer's `ON CONFLICT (tx_hash)` uses for deduplication lookups. The explicit `idx_deposits_user_id` is separate and covers user-scoped queries only.
 >
@@ -410,8 +410,7 @@ Redis is the primary speed layer. All keys follow a structured naming convention
 | `user:{userId}:serverSeed` | `STRING` (hex) | None | API Gateway (on registration and seed rotation) | API Gateway (read before calling PF Worker) | Active server seed for Provably Fair. The PF Worker is stateless — the Gateway reads this key and passes the seed to the PF Worker on every `/calculate` call. Postgres `users.active_server_seed` is the canonical backup. |
 | `user:updates:{userId}` | Pub/Sub channel | — | Ledger Consumer (PUBLISH) | API Gateway (SUBSCRIBE) | Real-time notifications. Ledger publishes after DepositReceived or WithdrawalCompleted; Gateway pushes BALANCE_UPDATE / WITHDRAWAL_COMPLETED to WebSocket. |
 | `session:{userId}` | `STRING` (`"active"` marker) | 24h (configurable via `JWT_SESSION_TTL`) | API Gateway (on EIP-712 auth success) | API Gateway (on every authenticated request) | Session registry. Every request validates the JWT **and** this key's existence. Admin can delete the key to instantly revoke a session, regardless of JWT expiry. |
-| `rate:{ip}` | `ZSET` (member=request UUID, score=epoch_ms) | Rolling (EXPIRE set per window) | API Gateway Lua (sliding window algorithm) | API Gateway Lua (`ZCOUNT` to check requests in window) | IP-level rate limiting. Members older than the window are pruned via `ZREMRANGEBYSCORE`. Atomic via Lua. |
-| `rate:session:{userId}` | `ZSET` | Rolling | API Gateway Lua | API Gateway Lua | Session-level rate limiting (secondary limiter, per-wallet). |
+| `ratelimit:{subject}:{action}:{windowBucket}` | `STRING` (integer counter) | `windowMs + 1000ms` | API Gateway Lua (`INCR`, `PEXPIRE` on first hit) | API Gateway Lua | Fixed-window limiter. `windowBucket = floor(nowMs/windowMs)`. Lower Redis CPU/memory than ZSET sliding windows; accepts boundary burst behavior by design. |
 
 ### Redis ↔ Postgres Sync Points
 
