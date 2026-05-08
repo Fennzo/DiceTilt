@@ -1,6 +1,9 @@
 export { Chain, Currency, BetDirection, KAFKA_TOPICS } from './enums.js';
 export type { Chain as ChainType, Currency as CurrencyType, BetDirection as BetDirectionType } from './enums.js';
 
+export { computeCommitment } from './crypto.js';
+export { setupPoolErrorHandler } from './db-utils.js';
+
 export type {
   BetResolvedEvent,
   DepositReceivedEvent,

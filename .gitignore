@@ -11,13 +11,11 @@ results/
 *.key
 *.pem
 .secrets
-MASTER_PROMPT.md
 
 # Logs & OS
 *.log
 .DS_Store
 Thumbs.db
-docs/
 
 # IDEs & Tools
 .claude/
@@ -35,6 +33,9 @@ out/
 artifacts/
 cache/
 typechain-types/
+
+# Service Build Artifacts
+services/api-gateway/packages/
 
 # Testing
 coverage/

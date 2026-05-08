@@ -26,8 +26,10 @@ CREATE TABLE IF NOT EXISTS wallets (
                           REFERENCES users(id) ON DELETE CASCADE,
     chain             VARCHAR(20)   NOT NULL,
     currency          VARCHAR(10)   NOT NULL,
+    -- Canonical balance = default + deposits - withdrawals - wagers + payouts.
+    -- Synchronized with Redis via ledger-consumer batch inserts and deposit/withdrawal handlers.
     balance           NUMERIC(40,18) NOT NULL DEFAULT 0,
-    -- C3/H6 — Escrow model: tracks funds currently held in active bets.
+    -- Escrow model: tracks funds currently held in active bets.
     -- Live escrow state is authoritative in Redis; this column is updated
     -- by the Ledger Consumer for audit/reconciliation purposes.
     balance_escrowed  NUMERIC(40,18) NOT NULL DEFAULT 0,

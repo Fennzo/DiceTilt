@@ -31,10 +31,9 @@ const baseUrlIdx = args.indexOf('--base-url');
 const BASE_URL = baseUrlIdx !== -1 ? args[baseUrlIdx + 1] : 'http://localhost:3000';
 const WS_URL   = BASE_URL.replace(/^http/, 'ws') + '/ws';
 
-const TREASURY = '0x5FbDB2315678afecb367f032d93F642f64180aa3';
 const ANVIL    = 'http://localhost:8545';
-// Hardhat account #1 — pre-funded, used by localhost frontend (/)
-const DEMO_WALLET = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8';
+// Anvil only unlocks the first 20 HD-derived accounts (0-19).
+const WALLET_INDEX = 1;
 
 let passed = 0, failed = 0;
 function pass(msg)  { console.log(`  ✓  ${msg}`); passed++; }
@@ -108,16 +107,28 @@ async function run() {
   console.log(`  BASE_URL : ${BASE_URL}`);
   console.log(`  WS_URL   : ${WS_URL}`);
 
-  // ── Step 1: get JWT for demo wallet ────────────────────────────────────────
+  // ── Step 1: get JWT for demo wallet (uses walletIndex=1 for Anvil-unlocked account) ──
   section('Auth');
-  let jwt, userId, balanceBefore;
+  let jwt, userId, walletAddress, balanceBefore, treasuryAddress;
   try {
-    const auth = await apiFetch('/api/v1/dev/token?walletIndex=301');
+    const auth = await apiFetch(`/api/v1/dev/token?walletIndex=${WALLET_INDEX}`);
     jwt    = auth.token;
     userId = auth.userId;
+    walletAddress = auth.walletAddress;
     pass(`dev token acquired  userId=${userId.slice(0, 8)}…`);
   } catch (e) {
     fail(`dev token: ${e.message}`);
+    process.exit(1);
+  }
+
+  // Fetch the actual deployed treasury address (not hardcoded — changes on redeploy)
+  try {
+    const cfg = await apiFetch('/api/v1/config');
+    if (!cfg.treasuryContractAddress) throw new Error('No treasuryContractAddress in /config');
+    treasuryAddress = cfg.treasuryContractAddress;
+    pass(`treasury address: ${treasuryAddress.slice(0, 10)}…`);
+  } catch (e) {
+    fail(`treasury config: ${e.message}`);
     process.exit(1);
   }
 
@@ -160,8 +171,8 @@ async function run() {
 
   // Send the deposit transaction (mirrors what the frontend does)
   const depositTxHash = await anvil('eth_sendTransaction', [{
-    from:  DEMO_WALLET,
-    to:    TREASURY,
+    from:  walletAddress,
+    to:    treasuryAddress,
     value: '0x' + (BigInt(Math.round(DEPOSIT_AMOUNT * 1e18))).toString(16),
     data:  '0x',
   }]);

@@ -1,12 +1,15 @@
 import { Router, type Request, type Response, type Router as RouterType } from 'express';
 import jwt from 'jsonwebtoken';
-import crypto from 'node:crypto';
 import { config } from './config.js';
 import { getServerSeed, getUserNonce, redis, checkSession, checkRateLimit } from './redis.service.js';
 import { pfRotateSeed } from './pf.client.js';
 import { updateServerSeed, insertSeedCommitment, revealSeedInAudit } from './db.js';
-import { ChainSchema, CurrencySchema } from '@dicetilt/shared-types';
+import { ChainSchema, CurrencySchema, computeCommitment } from '@dicetilt/shared-types';
 import { rateLimitRejections } from './metrics.js';
+import { REDIS_SCAN_BATCH_SIZE } from './constants.js';
+import { createLoggers } from '@dicetilt/logger';
+
+const { app: log, security } = createLoggers('api-gateway');
 
 const router: RouterType = Router();
 
@@ -25,7 +28,6 @@ function extractUserId(req: Request, res: Response): string | null {
   }
 }
 
-// Fix #3 — verify the session is still active (not revoked) before serving PF data.
 // Without this check, a user whose session was invalidated could still access
 // their server seed commitment and rotate seeds.
 async function checkActiveSession(userId: string, res: Response): Promise<boolean> {
@@ -69,7 +71,7 @@ router.get('/api/pf/status', async (req: Request, res: Response) => {
     return;
   }
 
-  const serverCommitment = crypto.createHash('sha256').update(serverSeed).digest('hex');
+  const serverCommitment = computeCommitment(serverSeed);
   const currentNonce = await getUserNonce(userId, chain.data, currency.data);
   res.json({ serverCommitment, currentNonce });
 });
@@ -94,22 +96,24 @@ router.post('/api/pf/rotate-seed', async (req: Request, res: Response) => {
       return;
     }
 
-    // M2 — Server-side verification: compute previousCommitment before rotation so
     // we can (a) verify SHA256(revealedSeed) === previousCommitment server-side, and
     // (b) include it in the response so the user can independently verify without
     // needing to remember which commitment was active.
     // NOTE: revealedSeed is still returned to the client — withholding it would break
     // provably fair (users must be able to independently re-derive game outcomes).
-    const previousCommitment = crypto.createHash('sha256').update(currentSeed).digest('hex');
+    const previousCommitment = computeCommitment(currentSeed);
 
     const { revealedSeed, newServerSeed, newCommitment } = await pfRotateSeed(currentSeed);
 
-    // M2 — Attest server-side verification: SHA256(revealedSeed) must equal the
+    // Attest server-side verification: SHA256(revealedSeed) must equal the
     // commitment that was shown to the user before bets were placed.
-    const verificationPassed = crypto.createHash('sha256').update(revealedSeed).digest('hex') === previousCommitment;
+    const verificationPassed = computeCommitment(revealedSeed) === previousCommitment;
 
     if (!verificationPassed) {
-      console.error('[PF] CRITICAL: Server-side verification failed — revealedSeed does not match previousCommitment');
+      security.error('Server-side seed verification failed', {
+        event: 'SEED_VERIFICATION_FAILED',
+        message: 'revealedSeed does not match previousCommitment'
+      });
       // Consider: throw new Error('Seed verification failed');
     }
 
@@ -125,11 +129,10 @@ router.post('/api/pf/rotate-seed', async (req: Request, res: Response) => {
     try {
       await redis.set(`user:${userId}:serverSeed`, newServerSeed);
 
-      // Fix #15 — SCAN is cursor-based and non-blocking; safe under load.
       const nonceKeys: string[] = [];
       let cursor = '0';
       do {
-        const [nextCursor, keys] = await redis.scan(cursor, 'MATCH', `user:${userId}:nonce:*`, 'COUNT', 100);
+        const [nextCursor, keys] = await redis.scan(cursor, 'MATCH', `user:${userId}:nonce:*`, 'COUNT', REDIS_SCAN_BATCH_SIZE);
         cursor = nextCursor;
         nonceKeys.push(...keys);
       } while (cursor !== '0');
@@ -142,15 +145,18 @@ router.post('/api/pf/rotate-seed', async (req: Request, res: Response) => {
         await pipeline.exec();
       }
     } catch (redisErr) {
-      console.warn('[PF] Redis sync after seed rotation failed (non-fatal — recovers on re-auth):', redisErr);
+      log.warn('Redis sync after seed rotation failed (non-fatal — recovers on re-auth)', {
+        event: 'REDIS_SYNC_ERROR',
+        error: String(redisErr)
+      });
     }
 
-    // M2 — Response includes previousCommitment and serverVerified so users can:
+    // Response includes previousCommitment and serverVerified so users can:
     // 1. Independently confirm: SHA256(revealedServerSeed) === previousCommitment
     // 2. Trust that the server already verified this and attested the result
     res.json({ revealedServerSeed: revealedSeed, previousCommitment, newCommitment, serverVerified: verificationPassed });
   } catch (err) {
-    console.error('[PF] rotate-seed error:', err);
+    log.error('Rotate-seed error', { event: 'ROTATE_SEED_ERROR', error: String(err) });
     res.status(500).json({ error: 'INTERNAL_ERROR' });
   }
 });

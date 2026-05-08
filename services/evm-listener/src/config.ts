@@ -25,4 +25,5 @@ export const config = {
   pollingIntervalMs: parseEnvInt('EVM_POLLING_INTERVAL_MS', 2000),
   dedupCacheSize: parseEnvInt('DEDUP_CACHE_SIZE', 1000),
   metricsPort: parseEnvInt('METRICS_PORT', 3010),
+  defaultEthBalance: process.env.DEFAULT_ETH_BALANCE ?? '10.00000000',
 };

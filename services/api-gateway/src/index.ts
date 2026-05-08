@@ -9,7 +9,7 @@ import { withdrawRouter } from './withdraw.routes.js';
 import { devRouter } from './dev.routes.js';
 import { setupWebSocket } from './ws.handler.js';
 import { connectProducer, disconnectProducer } from './kafka.producer.js';
-import { redis, redisSub } from './redis.service.js';
+import { redis, redisSub, flushStaleWsConnCounters } from './redis.service.js';
 import { pool } from './db.js';
 import { config } from './config.js';
 import { metricsHandler } from './metrics.js';
@@ -115,6 +115,25 @@ if (cluster.isPrimary) {
 
   const start = async (): Promise<void> => {
     await connectProducer();
+
+    // Flush stale ws:conns:* counters from previous gateway lifecycle.
+    // Docker force-kills leave these at max, blocking reconnections for up to 24h.
+    try {
+      const flushed = await flushStaleWsConnCounters();
+      if (flushed > 0) {
+        log.info('Flushed stale WS connection counters on startup', {
+          event: 'WS_CONN_FLUSH',
+          flushed,
+          workerId: cluster.worker?.id,
+        });
+      }
+    } catch (err) {
+      log.warn('Failed to flush stale WS counters — they will self-expire via TTL', {
+        event: 'WS_CONN_FLUSH_ERROR',
+        error: String(err),
+        workerId: cluster.worker?.id,
+      });
+    }
 
     const server = http.createServer(app);
     server.listen(config.port, () => {

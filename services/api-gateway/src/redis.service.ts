@@ -2,6 +2,10 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import Redis from 'ioredis';
 import { config } from './config.js';
+import { MS_PER_SECOND, REDIS_SCAN_BATCH_SIZE } from './constants.js';
+import { createLoggers } from '@dicetilt/logger';
+
+const { app: log } = createLoggers('api-gateway');
 
 const moduleDir = __dirname;
 
@@ -84,8 +88,8 @@ function validateParams(chain: string, currency: string): void {
 // Without these handlers, ioredis emits an 'error' event that — if no listener is
 // registered — crashes the Node.js process via the EventEmitter default behaviour.
 // ioredis handles reconnection internally; we only need to log and stay alive.
-redis.on('error', (err) => console.error('[Redis] Connection error:', err));
-redisSub.on('error', (err) => console.error('[Redis] Sub connection error:', err));
+redis.on('error', (err) => log.error('Redis connection error', { event: 'REDIS_ERROR', error: String(err) }));
+redisSub.on('error', (err) => log.error('Redis sub connection error', { event: 'REDIS_SUB_ERROR', error: String(err) }));
 
 export interface EscrowResult {
   success: boolean;
@@ -264,10 +268,10 @@ export async function checkRateLimit(
   limit: number,
 ): Promise<boolean> {
   const nowMs = Date.now();
-  const windowMs = windowSeconds * 1000;
+  const windowMs = windowSeconds * MS_PER_SECOND;
   const bucket = Math.floor(nowMs / windowMs);
   const key = `ratelimit:${userId}:${action}:${bucket}`;
-  const result = await redis.eval(RATE_LIMIT_LUA, 1, key, limit, windowMs + 1000) as number;
+  const result = await redis.eval(RATE_LIMIT_LUA, 1, key, limit, windowMs + MS_PER_SECOND) as number;
   return result === 1;
 }
 
@@ -291,4 +295,36 @@ export async function reserveWsConnectionSlot(
 export async function releaseWsConnectionSlot(userId: string): Promise<void> {
   const key = `ws:conns:${userId}`;
   await redis.eval(WS_CONN_RELEASE_LUA, 1, key);
+}
+
+/**
+ * Flush all stale ws:conns:* counters on startup.
+ *
+ * When Docker force-kills the api-gateway container, WS close events never fire,
+ * so releaseWsConnectionSlot (DECR) never runs. The counter stays stale at the
+ * max (5) and blocks reconnections for up to 24 hours (the TTL default).
+ *
+ * Since every ws:conns key is created by the reserve function during the current
+ * gateway lifecycle, ALL of them are stale after a restart. Flushing is safe:
+ * - No in-flight connections exist yet (container just started).
+ * - Each new connection will re-INCR via reserveWsConnectionSlot.
+ *
+ * Uses SCAN (not KEYS) to avoid blocking Redis on large key spaces.
+ */
+export async function flushStaleWsConnCounters(): Promise<number> {
+  let flushed = 0;
+  const stream = redis.scanStream({ match: 'ws:conns:*', count: REDIS_SCAN_BATCH_SIZE });
+  return new Promise((resolve, reject) => {
+    stream.on('data', (keys: string[]) => {
+      if (keys.length > 0) {
+        flushed += keys.length;
+        redis.del(...keys).catch((err) => {
+          // Log but don't fail — stale counters self-expire via TTL anyway.
+          log.error('Failed to DEL ws:conns keys', { event: 'REDIS_DEL_ERROR', error: String(err) });
+        });
+      }
+    });
+    stream.on('end', () => resolve(flushed));
+    stream.on('error', (err: Error) => reject(err));
+  });
 }

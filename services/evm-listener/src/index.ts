@@ -2,7 +2,12 @@ import { ethers } from 'ethers';
 import { Kafka } from 'kafkajs';
 import { v4 as uuidv4 } from 'uuid';
 import { config } from './config.js';
-import { getUserIdByWalletAddress, isTxHashAlreadyDeposited } from './db.js';
+import {
+  getMaxDepositedBlockNumber,
+  getUserIdByWalletAddress,
+  isTxHashAlreadyDeposited,
+  purgeStaleChainData,
+} from './db.js';
 import { KAFKA_TOPICS, type DepositReceivedEvent } from '@dicetilt/shared-types';
 import { register, collectDefaultMetrics, Counter } from 'prom-client';
 import { createLoggers } from '@dicetilt/logger';
@@ -139,9 +144,38 @@ async function runListener() {
         provider,
       );
 
+      // Chain-reset detection: Anvil resets to block 0 on every docker restart.
+      // If the DB contains deposits at block numbers that exceed the current chain
+      // head, those deposits are from a previous chain instance and their txHashes
+      // would collide with new deposits (Anvil is deterministic). Purge them before
+      // the historical scan to prevent the ON CONFLICT (tx_hash) DO NOTHING dedup
+      // from silently dropping legitimate new deposits.
+      const currentBlock = await provider.getBlockNumber();
+      const maxDepositedBlock = await getMaxDepositedBlockNumber();
+      if (maxDepositedBlock !== null && currentBlock < maxDepositedBlock) {
+        log.warn('Chain reset detected — purging stale deposits/withdrawals', {
+          event: 'CHAIN_RESET_DETECTED',
+          currentBlock,
+          maxDepositedBlock,
+        });
+        try {
+          const result = await purgeStaleChainData(config.defaultEthBalance);
+          log.info('Stale chain data purged', {
+            event: 'CHAIN_RESET_PURGED',
+            ...result,
+            currentBlock,
+          });
+        } catch (purgeErr) {
+          log.error('Failed to purge stale chain data — deposits may be silently dropped', {
+            event: 'CHAIN_RESET_PURGE_FAILED',
+            error: String(purgeErr),
+          });
+        }
+      }
+
       // Historical scan: catches any Deposit events missed while the listener was down.
       // Runs once per connect(); dedup (in-memory Set + DB ON CONFLICT) prevents double-crediting.
-      let scanHead = await provider.getBlockNumber();
+      let scanHead = currentBlock;
       try {
         const pastEvents = await contract.queryFilter(contract.filters.Deposit(), 0, scanHead) as ethers.EventLog[];
         log.info('Historical scan complete', { event: 'HISTORICAL_SCAN', count: pastEvents.length });

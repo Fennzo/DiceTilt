@@ -7,6 +7,7 @@ import {
   type BetResolvedEvent,
   type DepositReceivedEvent,
   type WithdrawalCompletedEvent,
+  setupPoolErrorHandler,
 } from '@dicetilt/shared-types';
 import { register, collectDefaultMetrics, Counter, Gauge } from 'prom-client';
 import { createLoggers } from '@dicetilt/logger';
@@ -44,6 +45,8 @@ const pool = new pg.Pool({
   idleTimeoutMillis: config.dbIdleTimeoutMs,
   connectionTimeoutMillis: config.dbConnectionTimeoutMs,
 });
+
+setupPoolErrorHandler(pool, 'ledger-consumer');
 const redis = new Redis(config.redisUri, { maxRetriesPerRequest: config.redisMaxRetries });
 
 // Atomically credit a deposit to Redis without overwriting accumulated bet P&L.
@@ -81,31 +84,44 @@ async function batchInsertBets(events: BetResolvedEvent[]): Promise<void> {
   if (events.length === 0) return;
   const client = await pool.connect();
   try {
-    // Unnest bulk insert: one round-trip for N rows
+    await client.query('BEGIN');
+
+    // Unnest bulk insert: one round-trip for N rows.
+    // INSERT...RETURNING feeds the pnl_by_wallet CTE which atomically updates
+    // wallets.balance with net P&L for each (user_id, chain, currency) pair.
+    // ON CONFLICT (bet_id) DO NOTHING means only genuinely new bets affect balances.
     const placeholders = getBetInsertPlaceholders(events.length);
     const values = events.flatMap(ev => [
       ev.bet_id, ev.user_id, ev.chain, ev.currency,
       ev.wager_amount, ev.payout_amount, ev.game_result,
       ev.client_seed, ev.nonce_used, ev.outcome_hash, ev.executed_at,
     ]);
-    const res = await client.query(
-      `INSERT INTO transactions
-         (bet_id, user_id, chain, currency, wager_amount, payout_amount, game_result, client_seed, nonce_used, outcome_hash, executed_at)
-       VALUES ${placeholders}
-       ON CONFLICT (bet_id) DO NOTHING`,
+    await client.query(
+      `WITH inserted AS (
+         INSERT INTO transactions
+           (bet_id, user_id, chain, currency, wager_amount, payout_amount,
+            game_result, client_seed, nonce_used, outcome_hash, executed_at)
+         VALUES ${placeholders}
+         ON CONFLICT (bet_id) DO NOTHING
+         RETURNING user_id, chain, currency, wager_amount, payout_amount
+       ),
+       pnl_by_wallet AS (
+         SELECT user_id, chain, currency,
+                SUM(payout_amount - wager_amount) AS net_pnl
+         FROM inserted
+         GROUP BY user_id, chain, currency
+       )
+       UPDATE wallets w
+       SET balance = balance + pnl.net_pnl
+       FROM pnl_by_wallet pnl
+       WHERE w.user_id = pnl.user_id
+         AND w.chain = pnl.chain
+         AND w.currency = pnl.currency`,
       values,
     );
-    if (res.rowCount !== events.length) {
-      // M4 — Audit skipped rows. rowCount < batch size means some rows were
-      // skipped due to ON CONFLICT (bet_id) DO NOTHING.
-      const skippedCount = events.length - (res.rowCount ?? 0);
-      log.warn('Batch bet insert: some rows were skipped (idempotent duplicate)', {
-        event: 'BATCH_INSERT_SKIPPED',
-        batchSize: events.length,
-        inserted: res.rowCount,
-        skipped: skippedCount,
-      });
-    }
+
+    // rowCount from the outer UPDATE = number of wallets updated (not bets inserted).
+    // Log the batch for audit; ON CONFLICT skips are silently correct (idempotent).
     for (const ev of events) {
       audit.info('Bet settled', {
         event: 'BET_SETTLED',
@@ -118,6 +134,13 @@ async function batchInsertBets(events: BetResolvedEvent[]): Promise<void> {
         currency: ev.currency,
       });
     }
+
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch((rollbackErr) => {
+      log.error('Rollback failed', { event: 'ROLLBACK_ERROR', error: String(rollbackErr) });
+    });
+    throw err;
   } finally {
     client.release();
   }
@@ -157,13 +180,13 @@ async function processDepositReceived(ev: DepositReceivedEvent): Promise<boolean
       DEPOSIT_CREDIT_LUA, 1, balanceKey, ev.amount, pgNewBalance,
     )) as string;
 
-    // H5 — Dual-write skew detection. Redis tracks bet P&L and deposits; Postgres
-    // tracks deposits/withdrawals only. After a deposit, Redis must be >= Postgres
-    // (Redis includes net bet winnings on top). If Redis < Postgres, something
-    // dropped writes (e.g. partial Lua exec, failover). Log + counter for ops.
+    // H5 — Dual-write skew detection. Both stores now track the same canonical
+    // quantities (deposits, withdrawals, and bet P&L). After a deposit, Redis and
+    // Postgres should agree within floating-point tolerance. Any direction of skew
+    // is anomalous and signals a dropped write or race condition.
     const redisBal = parseFloat(redisNewBalance);
     const pgBal = parseFloat(pgNewBalance);
-    if (Number.isFinite(redisBal) && Number.isFinite(pgBal) && redisBal + 1e-9 < pgBal) {
+    if (Number.isFinite(redisBal) && Number.isFinite(pgBal) && Math.abs(redisBal - pgBal) > 1e-8) {
       depositRedisPgSkew.inc();
       security.error('Deposit Redis/Postgres skew detected', {
         event: 'DEPOSIT_REDIS_PG_SKEW',
@@ -345,13 +368,16 @@ async function main() {
     }
   }, config.kafkaLagPollIntervalMs);
 
-  // H4 — At-least-once delivery. autoCommit:false + manual resolveOffset only
-  // after a successful DB write guarantees a crash between "consume" and "persist"
-  // re-delivers the message on restart. All DB writes are idempotent
-  // (ON CONFLICT DO NOTHING / NOT EXISTS) so re-delivery is safe.
+  // H4 — At-least-once delivery. autoCommit:false disables the internal auto-commit timer.
+  // We call resolveOffset() after each successful DB write, then explicitly pass
+  // the uncommitted offsets to commitOffsetsIfNecessary() so the broker actually
+  // persists them. Without the offsets argument, the no-arg form only commits when
+  // autoCommitInterval or autoCommitThreshold is configured — both are null when
+  // autoCommit:false, making it a silent no-op. This caused offsets to never persist,
+  // so every restart replayed all uncommitted messages.
   await consumer.run({
     autoCommit: false,
-    eachBatch: async ({ batch, heartbeat, resolveOffset, commitOffsetsIfNecessary, isRunning, isStale }) => {
+    eachBatch: async ({ batch, heartbeat, resolveOffset, commitOffsetsIfNecessary, uncommittedOffsets, isRunning, isStale }) => {
       const { topic, messages } = batch;
 
       if (topic === KAFKA_TOPICS.BET_RESOLVED) {
@@ -396,7 +422,10 @@ async function main() {
               resolveOffset(messages[j]!.offset);
             }
           }
-          await commitOffsetsIfNecessary();
+          // Explicitly commit the resolved offsets to the Kafka broker.
+          // Passing uncommittedOffsets() bypasses the autoCommit gate that
+          // would otherwise be a no-op when autoCommit:false.
+          await commitOffsetsIfNecessary(uncommittedOffsets());
           await heartbeat();
           i = end;
         }
@@ -426,7 +455,7 @@ async function main() {
             // loop. The DLQ counter is the durable signal that ops must investigate.
             resolveOffset(message.offset);
           }
-          await commitOffsetsIfNecessary();
+          await commitOffsetsIfNecessary(uncommittedOffsets());
           await heartbeat();
         }
       }

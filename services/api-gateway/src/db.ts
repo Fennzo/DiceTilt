@@ -1,5 +1,6 @@
 import pg from 'pg';
 import { config } from './config.js';
+import { setupPoolErrorHandler } from '@dicetilt/shared-types';
 
 // Pool tuned for burst: explicit timeouts so pool.connect() fails fast instead of
 // hanging when all slots are occupied. Sizes via config (DB_POOL_MAX / DB_POOL_MIN).
@@ -10,6 +11,8 @@ export const pool = new pg.Pool({
   idleTimeoutMillis: config.dbIdleTimeoutMs,
   connectionTimeoutMillis: config.dbConnectionTimeoutMs,
 });
+
+setupPoolErrorHandler(pool, 'api-gateway');
 
 export async function createUserWithWallets(
   userId: string,

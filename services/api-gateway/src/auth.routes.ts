@@ -53,7 +53,6 @@ router.post('/api/v1/auth/verify', async (req: Request, res: Response) => {
     const { walletAddress: rawAddress, signature, nonce } = parsed.data;
     const walletAddress = rawAddress.toLowerCase();
 
-    // Atomically fetch-and-delete the challenge from Redis.
     // GETDEL ensures the nonce is consumed exactly once — no replay possible,
     // and all cluster workers share the same store.
     const found = await redis.getdel(`challenge:${nonce}`);
@@ -64,7 +63,6 @@ router.post('/api/v1/auth/verify', async (req: Request, res: Response) => {
       return;
     }
 
-    // The wallet must sign the server-issued nonce, binding auth to this specific challenge.
     const recovered = ethers.verifyMessage(nonce, signature);
     if (recovered.toLowerCase() !== walletAddress) {
       authFailures.inc();

@@ -6,8 +6,6 @@
   <title>DiceTilt — Provably Fair Dice</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&family=Rubik:wght@400;700;800&family=Staatliches&display=swap" rel="stylesheet">
-  <!-- Fix #14 — SRI hash locks this CDN script to the exact known-good build.
-       If the CDN serves a tampered file the browser refuses to execute it. -->
   <script src="https://cdn.jsdelivr.net/npm/ethers@6.11.0/dist/ethers.umd.min.js"
           integrity="sha384-m11WjBOwSWmjpJBEx5ut5ptUgN2T6X+Qenqk8HEc+FhisdpgXqVn8p7nc2xXxLbf"
           crossorigin="anonymous"></script>
@@ -69,19 +67,6 @@
       letter-spacing: 3px;
       line-height: 1;
       user-select: none;
-    }
-    #demo-banner {
-      display: none;
-      background: rgba(34,197,94,0.08);
-      border: 1px solid rgba(34,197,94,0.25);
-      color: var(--win);
-      padding: 5px 14px;
-      border-radius: 6px;
-      font-size: 0.72rem;
-      font-family: 'Courier New', monospace;
-      letter-spacing: 0.5px;
-      align-items: center;
-      gap: 4px;
     }
     .header-nav { display: flex; align-items: center; gap: 8px; }
     .header-nav a {
@@ -642,11 +627,6 @@
     <span class="logo-wordmark">DiceTilt</span>
   </a>
 
-  <div id="demo-banner" style="display:none; align-items:center;">
-    LOCALHOST — Hardhat #1 &nbsp;·&nbsp;
-    <span id="demo-wallet-addr" style="color:#4ade80;"></span>
-  </div>
-
   <nav class="header-nav">
     <a href="dashboard.html">Dashboard</a>
   </nav>
@@ -992,7 +972,6 @@
     const addr = wallet.address;
     const chRes = await fetch(`${API}/api/v1/auth/challenge`, { method: 'POST' });
     const { nonce } = await chRes.json();
-    // Fix #1 — sign the server-issued nonce, not the wallet address.
     // This binds the signature to this specific one-time challenge and prevents replay.
     const signature = await wallet.signMessage(nonce);
     const vRes = await fetch(`${API}/api/v1/auth/verify`, {
@@ -1005,11 +984,6 @@
     const parts = jwt.split('.');
     if (parts.length !== 3) throw new Error('Invalid token format');
     userId = JSON.parse(atob(parts[1])).userId;
-    if (DEMO_MODE) {
-      document.getElementById('demo-banner').style.display = 'flex';
-      document.getElementById('demo-wallet-addr').textContent =
-        wallet.address.slice(0, 6) + '…' + wallet.address.slice(-4);
-    }
     // Fund new localhost wallets from Hardhat #0 so deposits work immediately.
     if (isNewWallet) {
       fetch(`${API}/api/v1/dev/faucet`, {
@@ -1041,7 +1015,6 @@
 
   // ── WebSocket ───────────────────────────────────────────────────────────
   function connectWs() {
-    // Fix #8 — do not pass the JWT in the URL query string.
     // URL tokens appear in Nginx access logs and browser history.
     // Auth happens in the first WebSocket frame instead.
     const wsProtocol = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -1058,7 +1031,6 @@
     ws.onmessage = (e) => {
       const msg = JSON.parse(e.data);
       if (msg.type === 'AUTH_OK') {
-        // Fix #8 — reveal the game floor only after the server confirms auth.
         document.getElementById('ws-status').textContent = '● Connected';
         document.getElementById('ws-status').className   = 'connected';
         document.getElementById('loading').style.display    = 'none';

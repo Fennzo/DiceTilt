@@ -57,8 +57,9 @@ export const config = {
   wsAuthTimeoutMs: parseInt(process.env['WS_AUTH_TIMEOUT_MS'] ?? '10000', 10),
   wsMaxPayloadBytes: parseInt(process.env['WS_MAX_PAYLOAD_BYTES'] ?? '65536', 10),    // 64 KB
   maxWsConnectionsPerUser: parseInt(process.env['MAX_WS_CONNS_PER_USER'] ?? '5', 10),
-  // TTL on ws:conns:{userId} — drops phantom counts if a worker dies without DECR (refresh on each reserve).
-  wsConnCounterTtlSec: parseInt(process.env['WS_CONN_COUNTER_TTL_SEC'] ?? process.env['SESSION_TTL_SEC'] ?? '86400', 10),
+  // TTL on ws:conns:{userId} — safety net for phantom counts if a worker dies without DECR.
+  // Startup flush clears all stale counters, but this TTL bounds the window if flush is missed.
+  wsConnCounterTtlSec: parseInt(process.env['WS_CONN_COUNTER_TTL_SEC'] ?? '300', 10),
 
   // Bet / game
   betRateLimitWindowSec: parseInt(process.env['BET_RATE_LIMIT_WINDOW_SEC'] ?? '1', 10),

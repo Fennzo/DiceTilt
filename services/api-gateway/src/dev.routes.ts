@@ -1,7 +1,3 @@
-/**
- * dev.routes.ts — TEST_MODE-only endpoints for k6 load testing.
- * NEVER expose in production (mounted only when config.testMode === true).
- */
 import { Router, type Request, type Response, type Router as RouterType } from 'express';
 import jwt from 'jsonwebtoken';
 import { ethers } from 'ethers';
@@ -10,6 +6,7 @@ import { checkRateLimit } from './redis.service.js';
 import { rateLimitRejections } from './metrics.js';
 import { upsertUserSessionByWallet } from './auth-user.service.js';
 import { createLoggers } from '@dicetilt/logger';
+import { FAUCET_DEFAULT_AMOUNT, FAUCET_MIN_AMOUNT, FAUCET_MAX_AMOUNT } from './constants.js';
 
 const router: RouterType = Router();
 const { app: log } = createLoggers('api-gateway');
@@ -71,14 +68,14 @@ router.post('/api/v1/dev/faucet', async (req: Request, res: Response) => {
     res.status(404).end();
     return;
   }
-  const { address, amount = 10 } = req.body as { address?: string; amount?: number };
+  const { address, amount = FAUCET_DEFAULT_AMOUNT } = req.body as { address?: string; amount?: number };
 
   if (!address || !ethers.isAddress(address)) {
     res.status(400).json({ error: 'Invalid address' });
     return;
   }
 
-  const sendAmount = Math.min(Math.max(Number(amount) || 10, 0.01), 100);
+  const sendAmount = Math.min(Math.max(Number(amount) || FAUCET_DEFAULT_AMOUNT, FAUCET_MIN_AMOUNT), FAUCET_MAX_AMOUNT);
 
   try {
     const provider = new ethers.JsonRpcProvider(config.evmRpcUrl);

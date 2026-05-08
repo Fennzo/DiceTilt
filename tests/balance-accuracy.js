@@ -9,7 +9,7 @@
  *   2. ETH bet accuracy — GET /balance matches expected after a winning bet
  *   3. SOL bet accuracy — SOL GET /balance correct after bets
  *   4. Deposit accuracy — balance increments by EXACTLY the deposit amount,
- *      not reset to the Postgres value (which doesn't include bet P&L)
+ *      with Redis and Postgres both preserving accumulated bet P&L
  *   5. Consecutive deposits — second deposit also credited correctly
  *      (validates tx_hash dedup fix: second deposit not blocked by first)
  *
@@ -301,7 +301,6 @@ async function testSolBetBalance() {
 
     // Verify SOL balance unchanged on the ETH side and vice versa
     const apiEth = await getBalance(jwt, 'ethereum', 'ETH');
-    const initialEth = await getBalance(jwt, 'ethereum', 'ETH');
     pass(`SOL bet did not affect ETH balance (${apiEth.toFixed(4)} ETH)`);
   } finally {
     ws.close();
@@ -322,12 +321,13 @@ async function testDepositAccuracy() {
     return;
   }
 
-  // Use walletIndex=9 for deposit tests (isolated from bet tests)
-  const { token: jwt, walletAddress } = await getDevToken(309);
+  // Use walletIndex=9 for deposit tests (isolated from bet tests and unlocked by Anvil)
+  const { token: jwt, walletAddress } = await getDevToken(9);
   const ws = await connectWs(jwt);
 
   try {
-    // Step 1: accumulate some bet P&L so Redis diverges from default Postgres value
+    // Step 1: accumulate some bet P&L before the deposit so the test proves
+    // the deposit path preserves the existing balance state instead of resetting it.
     let betsDone = 0;
     for (const wager of [0.1, 0.15, 0.08]) {
       const r = await placeBet(ws, { wager, target: 50, direction: 'under' });

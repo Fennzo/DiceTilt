@@ -1,9 +1,9 @@
-import crypto from 'node:crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { config } from './config.js';
 import { createUserWithWallets, findUserByWalletAddress } from './db.js';
 import { pfGenerateSeed } from './pf.client.js';
-import { getUserBalance, initUserRedisState, setSession } from './redis.service.js';
+import { initUserRedisState, setSession } from './redis.service.js';
+import { computeCommitment } from '@dicetilt/shared-types';
 
 /**
  * Shared wallet auth bootstrap used by both signed auth and TEST_MODE dev auth:
@@ -19,19 +19,20 @@ export async function upsertUserSessionByWallet(walletAddress: string): Promise<
   if (existing) {
     userId = existing.userId;
     serverSeed = existing.serverSeed;
-    const currentEth = await getUserBalance(userId, 'ethereum', 'ETH');
-    const currentSol = await getUserBalance(userId, 'solana', 'SOL');
+    // Postgres is the canonical balance authority. Redis hydration is conditional
+    // (init-user-safe.lua only SETs when key is absent), so this is safe even
+    // during in-flight bets — existing Redis keys are never overwritten.
     await initUserRedisState(
       userId,
       serverSeed,
-      currentEth ?? existing.ethBalance,
-      currentSol ?? existing.solBalance,
+      existing.ethBalance,
+      existing.solBalance,
     );
   } else {
     userId = uuidv4();
     const seed = await pfGenerateSeed();
     serverSeed = seed.serverSeed;
-    const commitment = crypto.createHash('sha256').update(serverSeed).digest('hex');
+    const commitment = computeCommitment(serverSeed);
     await createUserWithWallets(userId, serverSeed, walletAddress, commitment);
 
     await initUserRedisState(userId, serverSeed, config.defaultEthBalance, config.defaultSolBalance);

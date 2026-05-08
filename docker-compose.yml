@@ -37,6 +37,7 @@ services:
       PGBOUNCER_DEFAULT_POOL_SIZE: "25"
       PGBOUNCER_MIN_POOL_SIZE: "5"
       PGBOUNCER_RESERVE_POOL_SIZE: "5"
+      PGBOUNCER_CLIENT_IDLE_TIMEOUT: "45"
     depends_on:
       postgres:
         condition: service_healthy
@@ -107,9 +108,25 @@ services:
 
   evm-node:
     image: ghcr.io/foundry-rs/foundry:latest
+    # Run as root so the entrypoint can chown the state volume (Docker creates
+    # named volumes as root:root but anvil runs as uid 1000). The entrypoint
+    # script fixes perms then drops to foundry user via su-exec before exec.
+    user: "0:0"
+    # init: true adds tini as PID 1 so SIGTERM is properly forwarded to anvil,
+    # enabling --dump-state to write the chain state file on graceful shutdown.
+    init: true
+    # Give anvil 30s to dump state to disk on SIGTERM before Docker sends SIGKILL.
+    stop_grace_period: 30s
     environment:
       ANVIL_IP_ADDR: 0.0.0.0
-    command: anvil --host 0.0.0.0
+    # Custom entrypoint that conditionally adds --load-state only when a
+    # previously dumped state file exists. Uses exec so anvil replaces the
+    # shell process and receives signals directly (no /bin/sh -c wrapper).
+    entrypoint: ["sh", "/anvil-entrypoint.sh"]
+    command: []
+    volumes:
+      - anvilstate:/data
+      - ./docker/anvil-entrypoint.sh:/anvil-entrypoint.sh:ro
     ports:
       - "8545:8545"
     healthcheck:
@@ -178,7 +195,7 @@ services:
       # TREASURY_CONTRACT_ADDRESS is intentionally NOT set here.
       # api-gateway reads it from /shared/treasury-addr (same volume as evm-listener)
       # so both services always reference the same deployed contract.
-      TEST_MODE: "${TEST_MODE:-false}"
+      TEST_MODE: "${TEST_MODE:-true}"
       LOG_LEVEL: "info"
       CLUSTER_WORKERS: "4"
     depends_on:
@@ -210,7 +227,7 @@ services:
   pgbouncer-exporter:
     image: prometheuscommunity/pgbouncer-exporter:latest
     environment:
-      PGBOUNCER_EXPORTER_CONNECTION_STRING: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@pgbouncer:6432/${POSTGRES_DB}?sslmode=disable
+      PGBOUNCER_EXPORTER_CONNECTION_STRING: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@pgbouncer:6432/pgbouncer?sslmode=disable
     depends_on:
       pgbouncer:
         condition: service_healthy
@@ -389,3 +406,4 @@ volumes:
   pgdata:
   redisdata:
   treasury-addr:
+  anvilstate:

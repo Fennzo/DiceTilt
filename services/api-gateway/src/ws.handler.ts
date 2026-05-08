@@ -41,17 +41,20 @@ import {
   escrowStuckTotal,
 } from './metrics.js';
 import { createLoggers, pseudonymize } from '@dicetilt/logger';
+import { DICE_MAX_RESULT } from './constants.js';
 
 const { app: log, audit, security } = createLoggers('api-gateway');
+
+// uuid v7 is available in uuid@10+
 const uuidv7 = (() => {
-  const candidate = (uuid as unknown as { v7?: () => string }).v7;
-  if (typeof candidate !== 'function') {
+  const v7 = (uuid as any).v7;
+  if (typeof v7 !== 'function') {
     throw new Error('uuid.v7 is unavailable. Ensure uuid@10+ is installed.');
   }
-  return candidate;
+  return v7 as () => string;
 })();
 
-// C3/H6 — Escrow error path: release escrowed wager back to available balance.
+// Escrow error path: release escrowed wager back to available balance.
 // Retries with exponential backoff — a transient Redis error must not silently
 // strand funds in the escrow key.
 async function releaseEscrowWithRetry(
@@ -80,7 +83,7 @@ async function releaseEscrowWithRetry(
   }
 }
 
-// C3/H6 — Settle bet: release wager from escrow and credit payout (0 on loss).
+// Settle bet: release wager from escrow and credit payout (0 on loss).
 // Runs fire-and-forget after BET_RESULT is sent to preserve P95 <20ms SLO.
 async function settleBetAsync(
   userId: string,
@@ -147,7 +150,6 @@ function sendError(ws: WebSocket, code: WebSocketErrorCode, message: string): vo
 }
 
 export function setupWebSocket(server: http.Server): WebSocketServer {
-  // Fix #5 — cap incoming WS frame size (default 100 MB → exhausts memory on attack).
   const wss = new WebSocketServer({ noServer: true, maxPayload: config.wsMaxPayloadBytes });
 
   server.on('upgrade', (req: http.IncomingMessage, socket, head) => {
@@ -156,7 +158,6 @@ export function setupWebSocket(server: http.Server): WebSocketServer {
       socket.destroy();
       return;
     }
-    // Fix #8 — do NOT authenticate during the HTTP upgrade.
     // A JWT in the URL query string is recorded in Nginx access logs and browser history.
     // Authentication now happens in the first WebSocket frame (AUTH message).
     wss.handleUpgrade(req, socket, head, (ws) => {
@@ -165,7 +166,6 @@ export function setupWebSocket(server: http.Server): WebSocketServer {
   });
 
   wss.on('connection', (ws: WebSocket, _req: http.IncomingMessage) => {
-    // Fix #8 — enforce an auth window to receive the AUTH frame.
     // Unauthenticated sockets that never send AUTH are closed automatically,
     // preventing idle socket accumulation.
     const authTimeout = setTimeout(() => {
@@ -261,7 +261,6 @@ export function setupWebSocket(server: http.Server): WebSocketServer {
       userSockets.add(ws);
       activeWsConnections.inc();
 
-      // Fix #8 — confirm successful auth to the client before accepting game messages.
       sendJson(ws, { type: 'AUTH_OK' });
       log.info('WebSocket authenticated', { event: 'WS_CONNECTED', userId: pseudonymize(userId), walletAddress: pseudonymize(walletAddress) });
 
@@ -344,7 +343,7 @@ async function handleBet(
     return;
   }
 
-  // C3/H6 — Escrow wager atomically: deducts from balance_available into balance_escrowed
+  // Escrow wager atomically: deducts from balance_available into balance_escrowed
   // and increments nonce. Fetch seed in parallel — no added latency.
   const luaStart = performance.now();
   let escrowResult: EscrowResult;
@@ -372,7 +371,13 @@ async function handleBet(
   if (!serverSeed) {
     // Seed missing — release escrow if it was taken before returning error.
     if (escrowResult.success) {
-      releaseEscrowWithRetry(userId, chain, currency, wagerAmount.toFixed(8)).catch(() => {});
+      releaseEscrowWithRetry(userId, chain, currency, wagerAmount.toFixed(8)).catch((err) => {
+        log.error('Failed to release escrow after seed missing', {
+          event: 'ESCROW_RELEASE_ERROR',
+          userId: pseudonymize(userId),
+          error: String(err)
+        });
+      });
     }
     sendError(ws, WebSocketErrorCode.INTERNAL_ERROR, 'Server seed not found');
     return;
@@ -395,7 +400,13 @@ async function handleBet(
   } catch (err) {
     // PF worker failed — release the escrowed wager back to available balance.
     log.error('PF calculate error', { event: 'WS_MESSAGE_ERROR', userId: pseudonymize(userId), error: String(err), stack: (err as Error).stack });
-    releaseEscrowWithRetry(userId, chain, currency, wagerAmount.toFixed(8)).catch(() => {});
+    releaseEscrowWithRetry(userId, chain, currency, wagerAmount.toFixed(8)).catch((err) => {
+      log.error('Failed to release escrow after PF error', {
+        event: 'ESCROW_RELEASE_ERROR',
+        userId: pseudonymize(userId),
+        error: String(err)
+      });
+    });
     sendError(ws, WebSocketErrorCode.INTERNAL_ERROR, 'Game computation failed');
     return;
   }
@@ -406,13 +417,12 @@ async function handleBet(
     (direction === 'under' && gameResult < target) ||
     (direction === 'over' && gameResult > target);
 
-  const winChance = direction === 'under' ? target - 1 : 100 - target;
-  const multiplier = winChance > 0 ? (100 - config.houseEdgePct) / winChance : 0;
+  const winChance = direction === 'under' ? target - 1 : DICE_MAX_RESULT - target;
+  const multiplier = winChance > 0 ? (DICE_MAX_RESULT - config.houseEdgePct) / winChance : 0;
   const payoutAmount = isWin ? wagerAmount * multiplier : 0;
 
-  // C3/H6 — Optimistic balance: post-escrow available balance.
+  // Optimistic balance: post-escrow available balance.
   // settleBetAsync and Kafka publish are fire-and-forget to keep response latency minimal.
-  // Frontend adds payoutAmount on win (Bug Fix #3) → displays correct post-settle balance.
   const optimisticBalance = escrowResult.newBalance;
   const betId = uuidv7();
   const durationMs = Math.round(performance.now() - betStart);
@@ -430,10 +440,16 @@ async function handleBet(
     executed_at: new Date().toISOString(),
   };
 
-  // C3/H6 — Settle escrow fire-and-forget (runs for both wins and losses).
+  // Settle escrow fire-and-forget (runs for both wins and losses).
   // settleBetAsync releases wager from escrowed and credits payout (0 on loss).
   // Retries up to 3× on transient Redis errors — no bet should strand funds in escrow.
-  settleBetAsync(userId, chain, currency, wagerAmount.toFixed(8), payoutAmount.toFixed(8)).catch(() => {});
+  settleBetAsync(userId, chain, currency, wagerAmount.toFixed(8), payoutAmount.toFixed(8)).catch((err) => {
+    log.error('Bet settlement failed (fire-and-forget)', {
+      event: 'SETTLE_BET_ERROR',
+      userId: pseudonymize(userId),
+      error: String(err)
+    });
+  });
 
   produceBetResolved(event).catch((err) =>
     log.error('BetResolved produce error', { event: 'KAFKA_PRODUCE_ERROR', betId, userId: pseudonymize(userId), error: String(err) }),
@@ -488,6 +504,13 @@ function setupPubSub(): void {
   redisSub.on('pmessage', (_pattern, channel, message) => {
     const userId = channel.replace('user:updates:', '');
     const sockets = clients.get(userId);
+    log.debug('Redis pub/sub message received', {
+      event: 'REDIS_PUBSUB_MESSAGE',
+      channel,
+      userId: pseudonymize(userId),
+      socketCount: sockets?.size ?? 0,
+      messagePreview: message.slice(0, 120),
+    });
     if (!sockets || sockets.size === 0) return;
 
     try {

@@ -4,6 +4,7 @@ import path from 'node:path';
 
 const LOG_DIR = process.env['LOG_DIR'] ?? '/app/logs';
 const LOG_LEVEL = process.env['LOG_LEVEL'] ?? 'info';
+const LOG_CONSOLE = process.env['LOG_CONSOLE'] !== 'false';
 
 export interface ServiceLoggers {
   app: winston.Logger;
@@ -53,6 +54,7 @@ export function createLoggers(service: string): ServiceLoggers {
     level: 'info',
     defaultMeta,
     transports: [
+      ...(LOG_CONSOLE ? [new winston.transports.Console({ format: consoleFormat })] : []),
       rotateFile('audit.%DATE%.log'),
     ],
   });
@@ -61,6 +63,7 @@ export function createLoggers(service: string): ServiceLoggers {
     level: 'warn',
     defaultMeta,
     transports: [
+      ...(LOG_CONSOLE ? [new winston.transports.Console({ format: consoleFormat })] : []),
       rotateFile('security.%DATE%.log'),
     ],
   });
