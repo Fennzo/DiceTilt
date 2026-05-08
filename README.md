@@ -6,7 +6,6 @@
 
 *A hobbyist engineer's deep dive into what really happens behind the felt.*
 
-[![Docker Compose](https://img.shields.io/badge/16_services-running-green?style=flat-square&logo=docker)]()
 [![P95 Latency](https://img.shields.io/badge/P95_latency-17.9ms-blue?style=flat-square)]()
 [![Throughput](https://img.shields.io/badge/peak_throughput-2%2C479_bets%2Fs-blue?style=flat-square)]()
 [![License](https://img.shields.io/badge/license-MIT-lightgrey?style=flat-square)]()
@@ -35,11 +34,9 @@ When you open DiceTilt you're looking at a real working casino floor.
 
 | | |
 |---|---|
-| ![Dice game in action](images/game-ui.png) | Instant dice bets. Pick over/under, choose your wager, get your result. Every bet settles in under 20 milliseconds. |
+| ![Dice game in action](images/dice.png) | Instant dice bets. Pick over/under, choose your wager, get your result. Every bet settles in under 20 milliseconds. |
 | ![Provably fair verification](images/provably-fair.png) | Provably fair audit. After each session, rotate the server seed and verify that every roll was computed honestly. The math checks out or it doesn't. |
 | ![Grafana observability](images/grafana-dashboard.png) | Operations dashboard. Bets per second, P95 latency, active connections, wallet volumes. Everything a floor manager would want to see, refreshed every 5 seconds. |
-
-*Note: On-chain deposit flow is fully functional (EVM listener → Kafka → ledger consumer → Redis pub/sub → WebSocket balance update), but no screenshot was captured during testing.*
 
 ---
 
